@@ -1,0 +1,27 @@
+title: Verilog Wiki
+description: Documentation and READMEs
+baseurl: "/hiaer_spike_hardware_documentation" 
+url: "https://diana.github.io"
+
+# Docs theme with sidebar
+remote_theme: just-the-docs/just-the-docs
+
+plugins:
+  - jekyll-remote-theme
+
+# Optional polish
+search_enabled: true
+heading_anchors: true
+nav_sort: case_insensitive
+permalink: pretty
+
+# Make all Markdown pages use the docs layout + show up in nav by default
+defaults:
+  - scope:
+      path: ""
+      type: "pages"
+    values:
+      layout: "default"
+
+# If you want folders shown as sections, give their index pages a title + nav_order.
+# (You’ll do that in each folder’s README.md / index.md front matter—see below.)
