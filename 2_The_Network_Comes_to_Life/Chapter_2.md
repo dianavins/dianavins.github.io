@@ -1,3 +1,8 @@
+---
+title: Chapter 2
+nav_order: 30
+---
+
 # Chapter 2: The Network Comes to Life
 
 ## Introduction

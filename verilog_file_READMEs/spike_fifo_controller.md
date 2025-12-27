@@ -1,3 +1,7 @@
+---
+title: Spike FIFO Controller
+nav_order: 47
+---
 # Spike FIFO Controller Module
 
 ## Overview

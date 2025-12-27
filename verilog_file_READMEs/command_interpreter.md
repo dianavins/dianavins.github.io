@@ -1,3 +1,7 @@
+---
+title: Command Interpreter
+nav_order: 40
+---
 # command_interpreter.v
 
 ## Module Overview

@@ -1,3 +1,7 @@
+---
+title: Internal Events Processor
+nav_order: 44
+---
 # internal_events_processor.v
 
 ## Module Overview

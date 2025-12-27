@@ -1,3 +1,7 @@
+---
+title: PCIe 2 FIFOs
+nav_order: 45
+---
 # pcie2fifos.v
 
 ## Module Overview

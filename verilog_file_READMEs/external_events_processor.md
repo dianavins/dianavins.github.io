@@ -1,3 +1,8 @@
+---
+title: External Events Processor
+nav_order: 41
+---
+
 # External Events Processor Module Family
 
 ## Overview

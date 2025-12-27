@@ -1,3 +1,8 @@
+---
+title: Input Data Handler
+nav_order: 43
+---
+
 # input_data_handler.v
 
 ## Module Overview

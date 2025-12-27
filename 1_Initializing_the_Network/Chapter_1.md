@@ -1,3 +1,8 @@
+---
+title: Chapter 1
+nav_order: 20
+---
+
 # Chapter 1: Initializing the Network
 
 ## Introduction

@@ -1,3 +1,7 @@
+---
+title: HBM Processor
+nav_order: 42
+---
 # hbm_processor.v
 
 ## Module Overview

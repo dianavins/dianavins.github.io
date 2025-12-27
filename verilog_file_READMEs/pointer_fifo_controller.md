@@ -1,3 +1,7 @@
+---
+title: Pointer FIFO Controller
+nav_order: 46
+---
 # Pointer FIFO Controller Module
 
 ## Overview

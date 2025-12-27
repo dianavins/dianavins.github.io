@@ -1,3 +1,9 @@
+---
+title: Hardware Map
+nav_order: 10
+---
+
+
 # Hardware Architecture Map - Low-Level Physical Organization
 
 ## Complete Physical Hardware Stack
