@@ -1,5 +1,5 @@
 ---
-title: "Chapter 1: Initializing the Network"
+title: 1. Initializing the Network
 has_children: true
 nav_order: 3
 ---

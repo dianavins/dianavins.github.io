@@ -1,5 +1,5 @@
 ---
-title: Verilog Files Review
+title: 3. Verilog Files Review
 has_children: true
 nav_order: 5
 ---

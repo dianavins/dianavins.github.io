@@ -1,10 +1,10 @@
 ---
-title: "2.1 The Execution Cycle"
+title: "2.1 Visualizing the Network's Signal Processing in Hardware"
 parent: "Chapter 2: The Network Comes to Life"
 nav_order: 1
 ---
 
-## 2.1 The Execution Cycle: Hardware Visualization
+## 2.1 Visualizing the Network's Signal Processing in Hardware
 
 ### Overview: Three Phases of Execution
 

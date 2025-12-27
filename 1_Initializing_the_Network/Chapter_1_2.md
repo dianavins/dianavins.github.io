@@ -4,7 +4,7 @@ parent: "Chapter 1: Initializing the Network"
 nav_order: 2
 ---
 
-## 1.2 Getting There: Host-FPGA Communication During Initialization
+## 1.2 How the Network is Written to the FPGA
 
 Now that we know *where* everything ends up, let's understand *how* it gets there. This requires understanding how the host computer communicates with the FPGA hardware.
 

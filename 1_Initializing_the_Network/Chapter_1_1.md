@@ -1,10 +1,10 @@
 ---
-title: "1.1 The Final State"
+title: "1.1 How the Network Looks in Hardware"
 parent: "Chapter 1: Initializing the Network"
 nav_order: 1
 ---
 
-## 1.1 The Final State: Where Everything Lives on Hardware
+# 1.1 How the Network Looks in Hardware
 
 Before we explain *how* the network gets programmed, let's understand *where* everything ends up. Think of the FPGA as having three distinct memory regions, each storing different parts of your network:
 
