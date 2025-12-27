@@ -1,7 +1,14 @@
+<<<<<<< HEAD
 title: "HiAER Spike Hardware Docs"
 description: "Hardware mini-textbook for hs_api software folks + comp neuro"
 url: "https://dianavins.github.io"
 baseurl: ""   # IMPORTANT for a user site repo (username.github.io)
+=======
+title: Verilog Wiki
+description: Documentation and READMEs
+baseurl: "" 
+url: "https://diana.github.io"
+>>>>>>> 9ac297e64fe7663a92b063de82f97ac49feff4a3
 
 remote_theme: just-the-docs/just-the-docs
 
