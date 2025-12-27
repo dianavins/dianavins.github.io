@@ -1,6 +1,7 @@
 ---
 title: Command Interpreter
-nav_order: 40
+parent: Verilog Files Review
+nav_order: 2
 ---
 # command_interpreter.v
 

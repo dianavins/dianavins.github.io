@@ -1,6 +1,7 @@
 ---
 title: Internal Events Processor
-nav_order: 44
+parent: Verilog Files Review
+nav_order: 7
 ---
 # internal_events_processor.v
 

@@ -1,6 +1,7 @@
 ---
 title: Pointer FIFO Controller
-nav_order: 46
+parent: Verilog Files Review
+nav_order: 6
 ---
 # Pointer FIFO Controller Module
 

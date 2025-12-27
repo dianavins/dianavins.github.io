@@ -1,6 +1,7 @@
 ---
 title: External Events Processor
-nav_order: 41
+parent: Verilog Files Review
+nav_order: 4
 ---
 
 # External Events Processor Module Family

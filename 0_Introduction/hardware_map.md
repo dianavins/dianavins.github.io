@@ -1,6 +1,6 @@
 ---
-title: Hardware Map
-nav_order: 10
+title: 0.2 Hardware Map
+nav_order: 2
 parent: Introduction
 ---
 

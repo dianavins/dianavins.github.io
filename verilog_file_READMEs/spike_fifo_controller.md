@@ -1,6 +1,7 @@
 ---
 title: Spike FIFO Controller
-nav_order: 47
+parent: Verilog Files Review
+nav_order: 8
 ---
 # Spike FIFO Controller Module
 
