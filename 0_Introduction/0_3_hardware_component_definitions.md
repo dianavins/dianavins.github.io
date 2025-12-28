@@ -100,12 +100,6 @@ Different types of memory make different trade-offs between these properties.
 - The capacitor holds an electrical charge (~30 femtofarads, about 10,000 electrons)
 - Charged capacitor = 1, discharged = 0
 
-**Why "Dynamic"?**
-- "Dynamic" refers to the fact that the stored charge leaks away over time (like a bucket with a small hole)
-- Must be "refreshed" every 64ms by reading and rewriting the data
-- This happens automatically by the memory controller
-- Contrast with "Static" RAM (SRAM) which holds its value indefinitely while powered (see Appendix for SRAM vs DRAM)
-
 **Library building analogy:**
 
 1. **DIMM (memory stick)** - The entire building. This is what you physically plug into the motherboard.

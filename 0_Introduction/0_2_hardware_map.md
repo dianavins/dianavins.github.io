@@ -9,6 +9,8 @@ parent: "0 Introduction"
 
 ## Complete Physical Hardware Stack
 
+# WILL BE UPDATED !!!! THIS IS NOT FINAL
+
 ```
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                         HOST COMPUTER (Physical Layer)                         │

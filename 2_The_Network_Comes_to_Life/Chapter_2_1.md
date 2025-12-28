@@ -30,29 +30,10 @@ A queue data structure where the first item added is the first item removed. The
 - **rxFIFO/txFIFO**: PCIe communication buffers (512-bit wide) for receiving commands from and sending results to the host.
 
 **One-Hot / Multi-Hot Encoding**
-A binary representation using a fixed range of bits, where each bit position corresponds to one item in a set. The bit value (0 or 1) indicates whether that item is active.
-
-In the FPGA, spike masks use **16 bits for 16 neuron groups**:
-```
-Bit positions:  [15][14][13]...[4][3][2][1][0]
-Neuron groups:   15  14  13 ... 4  3  2  1  0
-```
-
-**Example: If bits 3 and 4 are set to 1:**
-```
-exec_bram_spiked = 0x0018  (binary: 0000000000011000)
-                                              ↑↑
-                                         bit 4 bit 3
-
-Meaning: Groups 3 and 4 have spiking neurons
-         Groups 0, 1, 2, 5-15 have no spikes
-```
-
-**Terminology:**
-- **One-hot**: Exactly one bit is set. Example: `0x0008` (only bit 3 = 1) means only group 3 is active.
-- **Multi-hot**: Multiple bits can be set. Example: `exec_bram_spiked = 0x0007` (bits 0, 1, 2 all = 1) means groups 0, 1, and 2 all have spiking neurons.
-
-The spike masks (`exec_bram_spiked`, `exec_uram_spiked`) use multi-hot encoding because multiple groups can spike simultaneously.
+A binary representation where bits indicate active states:
+- **One-hot**: Exactly one bit is set to 1. Example: `0x0004` (only bit 2 set) means only group 2 is active.
+- **Multi-hot**: Multiple bits can be set to 1. Example: `exec_bram_spiked = 0x0007` (bits 0, 1, 2 set) means groups 0, 1, and 2 all have spiking neurons.
+The spike masks (`exec_bram_spiked`, `exec_uram_spiked`) use multi-hot encoding because multiple groups can have spikes simultaneously.
 
 **Pointer (HBM Address)**
 A 32-bit value that tells the hardware WHERE to find synapse data in HBM memory. Format: `{length[31:23], base_address[22:0]}`.
