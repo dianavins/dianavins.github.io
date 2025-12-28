@@ -1,6 +1,6 @@
 ---
 title: "2.2 The Code Behind Execution"
-parent: "Chapter 2: The Network Comes to Life"
+parent: "2 The Network Comes to Life"
 nav_order: 2
 ---
 

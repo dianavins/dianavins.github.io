@@ -1,6 +1,6 @@
 ---
 title: PCIe to FIFOs
-parent: Verilog Files Review
+parent: "3. Verilog Files Review"
 nav_order: 1
 ---
 # pcie2fifos.v

@@ -1,6 +1,6 @@
 ---
 title: External Events Processor
-parent: Verilog Files Review
+parent: "3. Verilog Files Review"
 nav_order: 4
 ---
 

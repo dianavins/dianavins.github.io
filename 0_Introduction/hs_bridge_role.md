@@ -1,7 +1,7 @@
 ---
 title: 0.5 hs_bridge Role and Responsibilities
 nav_order: 5
-parent: Introduction
+parent: "0 Introduction"
 ---
 
 # hs_bridge Role and Responsibilities

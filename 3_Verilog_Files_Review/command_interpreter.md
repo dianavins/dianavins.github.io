@@ -1,6 +1,6 @@
 ---
 title: Command Interpreter
-parent: Verilog Files Review
+parent: "3. Verilog Files Review"
 nav_order: 2
 ---
 # command_interpreter.v

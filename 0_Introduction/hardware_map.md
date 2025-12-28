@@ -1,7 +1,7 @@
 ---
 title: 0.2 Hardware Map
 nav_order: 2
-parent: Introduction
+parent: "0 Introduction"
 ---
 
 

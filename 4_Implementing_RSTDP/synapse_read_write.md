@@ -1,6 +1,6 @@
 ---
 title: "Reading and Writing Synapses"
-parent: "3 Implementing RSTDP"
+parent: "4 Implementing RSTDP"
 nav_order: 2
 ---
 

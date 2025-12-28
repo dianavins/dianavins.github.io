@@ -1,7 +1,7 @@
 ---
 title: 0.3 Hardware Component Definitions
 nav_order: 3
-parent: Introduction
+parent: "0 Introduction"
 ---
 
 # Hardware Component Definitions (Low-Level)

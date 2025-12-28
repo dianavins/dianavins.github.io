@@ -1,6 +1,6 @@
 ---
 title: "2.1 Visualizing the Network's Signal Processing in Hardware"
-parent: "Chapter 2: The Network Comes to Life"
+parent: "2 The Network Comes to Life"
 nav_order: 1
 ---
 

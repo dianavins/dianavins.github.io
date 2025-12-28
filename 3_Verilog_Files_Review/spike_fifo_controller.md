@@ -1,6 +1,6 @@
 ---
 title: Spike FIFO Controller
-parent: Verilog Files Review
+parent: "3. Verilog Files Review"
 nav_order: 8
 ---
 # Spike FIFO Controller Module

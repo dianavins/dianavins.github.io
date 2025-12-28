@@ -1,6 +1,6 @@
 ---
 title: Input Data Handler
-parent: Verilog Files Review
+parent: "3. Verilog Files Review"
 nav_order: 3
 ---
 

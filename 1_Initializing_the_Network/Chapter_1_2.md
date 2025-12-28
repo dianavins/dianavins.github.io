@@ -1,6 +1,6 @@
 ---
 title: "1.2 Host-FPGA Communication"
-parent: "Chapter 1: Initializing the Network"
+parent: "1 Initializing the Network"
 nav_order: 2
 ---
 

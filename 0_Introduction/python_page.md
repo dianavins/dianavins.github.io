@@ -1,7 +1,7 @@
 ---
 title: 0.1 Our hs_api Example
 nav_order: 1
-parent: Introduction
+parent: "0 Introduction"
 ---
 
 ## The Example Network: A Code Walkthrough

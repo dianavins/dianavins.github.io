@@ -1,7 +1,7 @@
 ---
 title: 0.4 Hardware System Architecture Diagram
 nav_order: 4
-parent: Introduction
+parent: "0 Introduction"
 ---
 
 # Hardware System Architecture Diagram

@@ -1,6 +1,6 @@
 ---
 title: HBM Processor
-parent: Verilog Files Review
+parent: "3. Verilog Files Review"
 nav_order: 5
 ---
 # hbm_processor.v

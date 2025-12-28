@@ -1,6 +1,6 @@
 ---
 title: "1.1 How the Network Looks in Hardware"
-parent: "Chapter 1: Initializing the Network"
+parent: "1 Initializing the Network"
 nav_order: 1
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: Pointer FIFO Controller
-parent: Verilog Files Review
+parent: "3. Verilog Files Review"
 nav_order: 6
 ---
 # Pointer FIFO Controller Module

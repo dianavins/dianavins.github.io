@@ -11,12 +11,12 @@ We will learn everything in the context of this network so that each component i
 - Has a [map](0_Introduction/hardware_map) visualizing the hardware components and connections
 
 ## [**Chapter 1**](chapter_1) = network compilation; shows you how the network looks in hardware, no moving parts.
-[**1.1**](1_Initializing_the_Network/Chapter_1_1) Explains the locations of everything conceptually, including a visualization
+[**1.1**](1_Initializing_the_Network/Chapter_1_1) Explains the locations of everything conceptually, including a visualization  
 [**1.2**](1_Initializing_the_Network/Chapter_1_2) Explains how the network was written into the FPGA from the host using hs_bridge and Verilog code
 
 ## [**Chapter 2**](chapter_2) = network processing timesteps
-(each network timestep consists of phases 0, 1, and 2)
-[**2.1**](2_The_Network_Comes_to_Life/Chapter_2_1) Walks through phases 0, 1 and 2 *conceptually*, no code. Introduces FPGA/Verilog modules as black boxes.
+(each network timestep consists of phases 0, 1, and 2)  
+[**2.1**](2_The_Network_Comes_to_Life/Chapter_2_1) Walks through phases 0, 1 and 2 *conceptually*, no code. Introduces FPGA/Verilog modules as black   boxes.
 [**2.2**](2_The_Network_Comes_to_Life/Chapter_2_2) Walks through phases 0, 1 and 2 in Verilog code; beginning to explain the FPGA/Verilog modules.
 
 ## [**Chapter 3**](chapter_3) = Verilog file/module breakdown
