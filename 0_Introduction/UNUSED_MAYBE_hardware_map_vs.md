@@ -1,5 +1,5 @@
 ---
-nav_exclude: true
+published: false
 ---
 
 # Hardware System Architecture Diagram

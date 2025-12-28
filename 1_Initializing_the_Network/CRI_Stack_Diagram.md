@@ -1,7 +1,7 @@
 ---
-title: "CRI Stack During Network Compilation"
+title: "Diagram of CRI Stack During Network Compilation"
 parent: "1 Initializing the Network"
-nav_order: 10
+nav_order: 3
 ---
 
 # CRI Stack During Network Compilation

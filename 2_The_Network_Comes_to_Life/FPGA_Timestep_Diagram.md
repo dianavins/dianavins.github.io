@@ -1,7 +1,7 @@
 ---
-title: "FPGA During 1 Timestep"
+title: "Diagram of FPGA During 1 Timestep"
 parent: "2 The Network Comes to Life"
-nav_order: 10
+nav_order: 3
 ---
 
 # FPGA During 1 Timestep
