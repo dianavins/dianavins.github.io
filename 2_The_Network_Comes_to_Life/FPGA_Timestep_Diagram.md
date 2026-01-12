@@ -16,12 +16,24 @@ nav_order: 3
 
 ## Before Phase 1:
 
-[Download PDF](FPGA_prior_1_phase_1.pdng)
+<object data="FPGA_prior_1_phase_1.png" type="image/png" width="100%" height="800px">
+  <p>Your browser does not support embedded images. <a href="FPGA_prior_1_phase_1.png">Download the image</a> to view it.</p>
+</object>
+
+[Download Image](FPGA_prior_1_phase_1.png)
 
 ## During Phase 1:
+
+<object data="FPGA_phase_1.pdf" type="application/pdf" width="100%" height="800px">
+  <p>Your browser does not support PDFs. <a href="FPGA_phase_1.pdf">Download the PDF</a> to view it.</p>
+</object>
 
 [Download PDF](FPGA_phase_1.pdf)
 
 ## During Phase 2:
+
+<object data="FPGA_phase_2.pdf" type="application/pdf" width="100%" height="800px">
+  <p>Your browser does not support PDFs. <a href="FPGA_phase_2.pdf">Download the PDF</a> to view it.</p>
+</object>
 
 [Download PDF](FPGA_phase_2.pdf)

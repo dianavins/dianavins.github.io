@@ -1,1842 +1,1243 @@
 ---
-title: "2.3 State Machine Coordination and Control Signals"
+title: "2.2 The Code Behind Execution"
 parent: "2 The Network Comes to Life"
-nav_order: 3
+nav_order: 2
 ---
 
-# 2.3 State Machine Coordination and Control Signals
+## 2.2 The Code Behind Execution
 
-## Introduction
+Now that we understand the hardware flow from Chapter 2.1, let's trace through the actual software and Verilog code that makes it happen.
 
-The FPGA neuromorphic system executes neural network timesteps through the coordinated operation of **four independent state machines** across multiple Verilog modules. Understanding how these state machines communicate and synchronize is key to understanding how the hardware processes spiking neural networks in real-time.
+### Setup: Sending Inputs to BRAM
 
-### The Four State Machines
+#### Python Code: network.step()
 
-1. **Command Interpreter (CI)** - The Orchestrator
-   - **Module:** `command_interpreter.v`
-   - **Role:** Receives commands from the host PC, initiates timesteps, coordinates all other modules, batches output spikes
-   - **State Machines:** RX (receive commands) and TX (send responses)
-   - **Analogy:** The conductor of an orchestra, setting tempo and cuing sections
+File: `hs_api/api.py` (lines 470-552)
 
-2. **HBM Processor** - The Memory Access Engine
-   - **Module:** `hbm_processor.v`
-   - **Role:** Reads connectivity pointers and synaptic data from High Bandwidth Memory, routes spikes
-   - **State Machines:** TX (send memory read commands) and RX (receive and distribute data)
-   - **Analogy:** The database engine that fetches network structure and weights
+```python
+def step(self, inputs, target="simpleSim", membranePotential=False):
+    """Runs a step of the simulation."""
 
-3. **External Events Processor (EEP)** - The Input Handler
-   - **Module:** `external_events_processor.v`
-   - **Role:** Manages external spike inputs in BRAM, streams them to HBM processor during Phase 1
-   - **State Machine:** Pipeline controller for BRAM read/write/clear operations
-   - **Analogy:** The input buffer that receives and distributes external stimuli
+    # Convert symbolic input names to numerical indices
+    # inputs = ['a0', 'a1', 'a2']
+    formated_inputs = [
+        self.connectome.get_neuron_by_key(symbol).get_coreTypeIdx()
+        for symbol in inputs
+    ]
+    # formated_inputs = [0, 1, 2] (axon indices)
 
-4. **Internal Events Processor (IEP)** - The Neuron State Manager
-   - **Module:** `internal_events_processor.v`
-   - **Role:** Stores neuron membrane potentials in URAM, accumulates synaptic inputs, generates spikes
-   - **State Machine:** Pipeline controller for URAM read/modify/write operations
-   - **Analogy:** The computational core that updates neuron states
-
-### Why Coordination Is Critical
-
-Each state machine runs independently but must synchronize at specific points because:
-
-- **Pipeline Latency:** BRAM has 3-cycle read latency, URAM has 3-cycle read latency, HBM has 100+ cycle latency
-- **Data Dependencies:** Phase 2 cannot start until Phase 1 pointers are collected
-- **Resource Sharing:** Multiple modules access shared resources (HBM, spike FIFOs)
-- **Timing Constraints:** All must complete before the next timestep can begin
-
-The coordination is achieved through **handshake signals** (like `exec_bram_phase1_ready`, `exec_hbm_rx_phase1_done`) that allow modules to signal their status and wait for others.
-
----
-
-## Part 1: Conceptual Overview
-
-### The Symphony Orchestra Analogy
-
-Think of timestep execution like a symphony orchestra performance:
-
-- **Conductor (Command Interpreter):** Raises baton (`exec_run` pulse), cues sections, keeps time
-- **String Section (External Events Processor):** Starts immediately, fills the air with melody (streams input spikes)
-- **Brass Section (HBM Processor):** Waits for strings to establish rhythm, then adds harmony (fetches pointers, then synapses)
-- **Percussion (Internal Events Processor):** Listens to all sections, adds accents (updates neurons, generates spikes)
-- **Stage Manager (FIFOs):** Passes music sheets between sections (pointer FIFOs, spike FIFOs)
-
-The conductor must wait for all sections to finish their parts before starting the next movement (timestep).
-
-### Visual Timeline of a Complete Timestep
-
-```
-CYCLE 0: exec_run pulse ━━━━━┓ (Conductor raises baton)
-                             ┃
-         ┏━━━━━━━━━━━━━━━━━━━╋━━━━━━━━━━━━━━━━━━━━┓
-         ┃                   ┃                    ┃
-         ▼ EEP               ▼ IEP                ▼ HBM
-    Fill BRAM pipe      Fill URAM pipe      Wait for sections
-    (3 cycles)          (3 cycles)          to signal ready
-         │                   │                    │
-         ▼                   ▼                    ▼
-    exec_bram_          exec_uram_          RX waits for
-    phase1_ready        phase1_ready        exec_bram_phase1_ready
-         │                   │                    │
-         │                   │                    ▼
-         │                   │               TX sends input
-         │                   │               pointer read cmds
-         │                   │                    │
-         ├───────────────────┴────────────────────┤
-         │                                        │
-         │         PHASE 1: POINTER COLLECTION    │
-         │         (~200-500 cycles)              │
-         │                                        │
-         │  EEP: Stream input spikes ────────────>│
-         │  IEP: Stream neuron pointers ─────────>│ HBM: Collect
-         │                                        │ pointers in
-         │                                        │ ptrFIFO
-         │                                        │
-         ├────────────────────────────────────────┤
-         │                                        ▼
-         │                                   rx_phase1_done
-         │                                        │
-         │         PHASE 2: SYNAPSE PROCESSING    │
-         │         (~300-1000 cycles)             │
-         │                                        │
-         │                         HBM TX: Pop ptrFIFO,
-         │                         send synapse read cmds
-         │                                 │
-         │                                 ▼
-         │                         HBM RX: Receive
-         │                         synapse data
-         │                                 │
-         │                     ┌───────────┴──────────┐
-         │                     ▼                      ▼
-         │              IEP: Accumulate         Spike FIFOs:
-         │              synaptic inputs         Collect output
-         │              Update neurons          spikes
-         │              Generate spikes              │
-         │                     │                     │
-         ▼                     ▼                     ▼
-    exec_bram_          exec_iep_              CI TX: Batch
-    phase1_done         phase2_done            spikes, send
-                                               to host
-                             │
-                             ▼
-                        Wait 31 cycles
-                        (safety margin)
-                             │
-                             ▼
-                        execRun_ctr++
-                             │
-                 ┌───────────┴───────────┐
-                 │                       │
-                 ▼                       ▼
-          More timesteps?            All done
-          Loop to CYCLE 0            exec_run_done=1
+    if self.target == "CRI":
+        if self.simDump:
+            return self.CRI.run_step(formated_inputs)
+        else:
+            spikeResult = self.CRI.run_step(formated_inputs, membranePotential)
+            # ... (parse and return spikes)
 ```
 
----
+This calls `hs_bridge.network.run_step()`, which calls `fpga_controller.input_user()`.
 
-### Phase 1: Pointer Collection (Conceptual Flow)
+#### Python Code: fpga_controller.input_user()
 
-**Goal:** Identify which neurons (input and internal) have connectivity data to fetch, collect their HBM addresses.
+File: `hs_bridge/FPGA_Execution/fpga_controller.py` (lines 899-1031)
 
-#### Step 1: Initiation (Cycles 0-3)
-```
-Command Interpreter:
-  - Receives exec_run pulse (from CMD_EXEC_STEP or CMD_EXEC_CONT command)
-  - Sets execRun_running = 1
-  - Starts performance timer (execRun_timer++)
+```python
+def input_user(inputs, numAxons, simDump=False, coreID=0, reserve=True, cont_flag=False):
+    """
+    Generates the input command for a given timestep
 
-External Events Processor (EEP):
-  - Toggles bram_select (swap present/future buffers)
-  - Enters FILL_PIPE state
-  - Issues 3 consecutive BRAM reads (addresses 0, 1, 2)
-  - Fills 3-stage pipeline
+    Parameters:
+    - inputs: list of axon indices (e.g., [0, 1, 2])
+    - numAxons: total number of axons (e.g., 5)
+    """
 
-Internal Events Processor (IEP):
-  - Resets uram_raddr = 0
-  - Enters FILL_PIPE_PHASE1 state
-  - Issues 3 consecutive URAM reads (addresses 0, 1, 2)
-  - Fills 3-stage pipeline
+    currInput = inputs  # [0, 1, 2]
+    currInput.sort()    # Ensure sorted order
 
-HBM Processor:
-  - TX clears completion flags (tx_done_rst = 1)
-  - TX enters STATE_SEND_INPUT_READ_COMMANDS
-  - RX enters STATE_WAIT_BRAM_PIPELINE
-  - Both wait for pipeline ready signals
-```
+    coreBits = np.binary_repr(coreID, 5) + 3*'0'  # 5 bits for coreID
+    coreByte = int(coreBits, 2)
 
-**Why 3 cycles?** BRAM and URAM have 3-cycle read latency. The pipeline must be "primed" before continuous reading can begin.
+    commandList = [0]*62 + [coreByte] + [1]  # Init packet: opcode 0x01
 
-#### Step 2: BRAM Pipeline Ready (Cycle 4+)
-```
-EEP:
-  - Pipeline filled, data from address 0 now available
-  - Sets exec_bram_phase1_ready = 1
-  - Enters STATE_READ_INPUTS (continuous streaming mode)
+    # For networks with <= 256 axons, we use a single 256-bit chunk
+    for count in range(math.ceil(numAxons/256)):
+        # Create 256-bit one-hot encoding
+        one_hot_bin = ["0"] * 256
+        inputSegment = [i for i in currInput
+                        if (256*count) <= i and i < (256*count+256)]
 
-HBM RX:
-  - Sees exec_bram_phase1_ready signal
-  - Enters STATE_READ_INPUT_POINTERS
-  - Ready to receive pointer data from HBM
+        for axon in inputSegment:
+            one_hot_bin[axon%256] = "1"
 
-HBM TX:
-  - Already sending read commands to HBM
-  - Address format: {8'd0, 1'b0, tx_addr[9:0], 4'd0, 5'd0}
-  - tx_addr increments from 0 to INPUT_ADDR_LIMIT
-  - Burst length = 15 (reads 16 consecutive 256-bit words per address)
-```
+        # Convert to bytes (8 bits per byte, little-endian)
+        while one_hot_bin:
+            curr_byte = one_hot_bin[:8][::-1]  # Reverse for endianness
+            curr_byte = "".join(curr_byte)
+            commandList = commandList + [int(curr_byte, 2)]
+            one_hot_bin = one_hot_bin[8:]
 
-**Synchronized Streaming:** EEP reads next BRAM address only when `exec_hbm_rvalidready = 1`, ensuring HBM keeps up.
+        # Add tail: padding + coreID + opcode
+        tail = 30*[0]
+        commandList = commandList + tail + [coreByte, 0]  # Opcode 0x00
 
-#### Step 3: Input Pointer Collection (Cycles 5-200+)
-```
-Parallel Operation:
+    # Example for inputs [0, 1, 2]:
+    # one_hot_bin = ["1", "1", "1", "0", "0", "0", ..., "0"]
+    # curr_byte = one_hot_bin[:8] = ["1", "1", "1", "0", "0", "0", "0", "0"]
+    # curr_byte reversed = ["0", "0", "0", "0", "0", "1", "1", "1"]
+    # curr_byte string = "00000111"
+    # int("00000111", 2) = 7 = 0x07 ✓
 
-EEP (Foreground):
-  - bramPresent_rden = 1 (when HBM signals ready)
-  - Reads neuron group from BRAM
-  - Outputs exec_bram_spiked (8-bit mask showing which groups spiked)
-  - Sends to pointer_fifo_controller
-  - Simultaneously: bramPresent_wren = 1 (clears read data to zero)
+    # So commandList will contain:
+    # [0]*62 + [coreID] + [1]  ← Init packet (opcode 0x01)
+    # [0x07, 0x00, 0x00, ..., 0x00]  ← Data packet (256 bits = 32 bytes)
+    # [0]*30 + [coreID] + [0]  ← Tail (opcode 0x00)
 
-HBM TX (Sending):
-  - Loops through tx_addr = 0 to INPUT_ADDR_LIMIT
-  - Sends burst read requests to HBM
-  - Each request fetches 16 consecutive pointer words
+    command = np.array(commandList, dtype=np.uint64)
 
-HBM RX (Receiving):
-  - Receives 256-bit pointer words from HBM
-  - Each word contains 8 pointers: [31:23]=length, [22:0]=address
-  - Forwards to pointer_fifo_controller
-  - pointer_fifo_controller demuxes to 16 ptrFIFOs based on spike mask
-
-Completion:
-  - When bramPresent_waddr == BRAM_ADDR_LIMIT
-  - EEP sets exec_bram_phase1_done = 1
+    # Send via DMA
+    exitCode = dmadump.dma_dump_write(command, len(command),
+                                       1, 0, 0, 0, dmadump.DmaMethodNormal)
 ```
 
-**Why Demuxing?** The 16 ptrFIFOs correspond to the 16 neuron groups (URAM banks). Each FIFO receives only the pointers for neurons in its group that spiked.
-
-#### Step 4: URAM Pipeline Ready (After BRAM Complete)
-```
-IEP:
-  - Waits for exec_bram_phase1_done = 1
-  - Transitions to STATE_PUSH_PTR_FIFO
-  - Continues incrementing uram_raddr
-  - Sets exec_uram_phase1_ready = 1
-  - Outputs neuron pointers for internal neurons that have connections
-
-HBM RX:
-  - Enters STATE_WAIT_URAM_PIPELINE
-  - Waits for exec_uram_phase1_ready signal
-  - Then enters STATE_READ_OUTPUT_POINTERS
-
-HBM TX:
-  - When tx_addr == INPUT_ADDR_LIMIT (inputs complete)
-  - Sets tx_select_inc = 1 (switch from inputs to outputs)
-  - Enters STATE_SEND_OUTPUT_READ_COMMANDS
-  - Address format changes: {8'd0, 1'b1, tx_addr[9:0], 4'd0, 5'd0}
-  - tx_select bit [18] = 1 indicates internal neurons
-```
-
-#### Step 5: Output Pointer Collection (Cycles 200-500)
-```
-Similar to input pointer collection:
-
-IEP (Streaming):
-  - Reads from all 16 URAM banks in parallel
-  - For each neuron: checks if it has outgoing connections
-  - Outputs pointer addresses to HBM processor
-
-HBM TX:
-  - Loops through output neuron groups
-  - Sends burst read requests for output pointers
-
-HBM RX:
-  - Receives output pointer data
-  - Forwards to pointer_fifo_controller
-  - Demuxes to 16 ptrFIFOs (now containing both input and output pointers)
-
-Completion:
-  - When rx_addr == {OUTPUT_ADDR_LIMIT, OUTPUT_ADDR_MOD}
-  - RX sets rx_phase1_done = 1
-  - When tx_addr == OUTPUT_ADDR_LIMIT
-  - TX sets tx_phase1_done = 1
-  - TX toggles tx_phase (0 → 1, entering Phase 2)
-```
-
-**Result of Phase 1:** The 16 ptrFIFOs now contain all HBM addresses for synaptic data that needs to be fetched.
-
----
-
-### Phase 2: Synapse Processing (Conceptual Flow)
-
-**Goal:** Fetch synaptic data from HBM, accumulate inputs in neurons, detect threshold crossings, generate output spikes.
-
-#### Step 1: Phase Transition (Cycle ~500)
-```
-HBM TX:
-  - Enters STATE_POP_POINTER_FIFO
-  - Waits for rx_phase1_done = 1 (already set)
-  - Waits for ptrFIFO not empty (OR safety timer expires)
-
-HBM RX:
-  - Enters STATE_PHASE1_DONE briefly
-  - Then STATE_READ_SYNAPSE_DATA
-  - Sets rx_phase1_done = 1 (enables TX to proceed)
-
-IEP:
-  - Transitions to Phase 2 processing state
-  - Ready to receive synaptic inputs from HBM
-```
-
-#### Step 2: Pointer-Driven Synapse Fetching (Cycles 500-1500)
-```
-HBM TX (Loop):
-  For each non-empty ptrFIFO:
-    1. ptrFIFO_rden = 1 (pop next pointer)
-    2. ptr_addr_set = 1 (load pointer into registers)
-       - ptr_addr = pointer.base_address [22:0]
-       - ptr_len = pointer.length [8:0] (number of synapse rows)
-       - ptr_ctr = 0 (progress counter)
-
-    3. Calculate burst length:
-       - ptr_burst = (remaining synapse rows < 16) ? remainder : 15
-
-    4. Send HBM read command:
-       - hbm_arvalid = 1
-       - hbm_araddr = {5'd0, ptr_addr[22:0], 5'd0}
-       - hbm_arlen = ptr_burst (0-15)
-
-    5. When HBM accepts (hbm_arready = 1):
-       - ptr_addr_inc = 1
-       - ptr_addr += (ptr_burst + 1)
-       - ptr_ctr += (ptr_burst + 1)
-
-    6. If ptr_ctr[8:4] == ptr_len[8:4]:
-       - Current pointer exhausted
-       - Return to step 1 (get next pointer)
-
-  Continue until:
-    - All ptrFIFOs empty
-    - Safety timer (wait_clks_cnt = 255) expires
-
-HBM TX Completion:
-  - Sets tx_phase2_done = 1
-  - tx_ptr_ctr = total 256-bit words requested
-```
-
-**Why Round-Robin?** The pointer_fifo_controller uses round-robin arbitration to fairly select from the 16 ptrFIFOs, ensuring all neuron groups get processed.
-
-#### Step 3: Synapse Data Reception and Distribution (Parallel)
-```
-HBM RX:
-  - hbm_rready = 1 (always accept synapse data)
-  - When hbm_rvalid = 1 (data arrives from HBM):
-
-    Step 3a: Assemble 512-bit packets
-      - 1st 256-bit word: Store in hbm_rdata_lower
-      - 2nd 256-bit word: Current hbm_rdata
-      - Combined = 512-bit exec_hbm_rdata
-      - Set hbm_count = 1 (second word marker)
-      - Assert exec_hbm_rvalidready = 1 (packet ready)
-
-    Step 3b: Route to IEP
-      - IEP sees exec_hbm_rvalidready = 1
-      - Reads exec_hbm_rdata (512 bits = 16 groups × 32 bits each)
-      - Extracts 16 synaptic input values
-      - For each group with input ≠ 0:
-          • Read current neuron potential from URAM
-          • Add synaptic input: new_V = old_V + input
-          • Apply neuron model (leak, reset, etc.)
-          • Check: if new_V > threshold → spike!
-          • Write updated potential back to URAM
-          • Set bit in exec_uram_spiked if spiked
-
-    Step 3c: Route to Spike FIFOs
-      - Extract 8 synapse entries from 256-bit word
-      - For synapse 0-7:
-          • Check spike_flag = hbm_rdata[N*32 + 31]
-          • If flag = 1:
-            - Extract neuron_address = hbm_rdata[N*32 + 16:N*32]
-            - Route to spike FIFO based on address[2:0]
-            - spkN_wren = 1, spkN_din = neuron_address
-
-    Step 3d: Count progress
-      - rx_ptr_ctr++ (count 256-bit words received)
-
-HBM RX Completion:
-  - When tx_phase2_done = 1 AND rx_ptr_ctr == tx_ptr_ctr
-  - All synapse data received and processed
-  - Sets rx_phase2_done = 1
-```
-
-**Dual Distribution:** Each 256-bit HBM word is used for TWO purposes:
-1. Synaptic inputs routed to IEP (for neuron updates)
-2. Spike flags routed to spike FIFOs (for output collection)
-
-#### Step 4: Spike Output Aggregation (Parallel with Step 3)
-```
-Spike FIFO Controller:
-  - Receives spikes from 8 parallel spike FIFOs (spk0-7)
-  - Round-robin reads from non-empty FIFOs
-  - Forwards to spk2ciFIFO (single aggregated FIFO)
-
-Command Interpreter TX:
-  - State: TX_STATE_WAIT_FOR_SPIKES
-  - While execRun_running = 1:
-      • spk2ciFIFO_rden = 1 (when spike available)
-      • spike_inc = 1 (add to batch)
-      • Batch size = 14 spikes
-
-  - When spike_ctr == 14:
-      • Send 512-bit packet to host:
-        [511:480] = 0xEEEEEEEE (opcode)
-        [479:32]  = 14 × 32-bit spike events
-        [31:0]    = execRun_ctr (timestamp)
-      • spike_rst = 1 (clear batch)
-```
-
-#### Step 5: Phase 2 Completion and Timestep Finalization
-```
-IEP:
-  - When exec_hbm_rx_phase2_done = 1
-  - Sets exec_iep_phase2_done = 1
-  - Neuron updates complete
-
-Command Interpreter RX:
-  - State: RX_STATE_WAIT_RUN
-  - Checks completion conditions:
-      • exec_iep_phase2_done = 1
-      • spk2ciFIFO_empty = 1 (all spikes drained)
-      • wait_clks_cnt == 31 (safety margin)
-
-  - When all satisfied:
-      • exec_run_inc = 1
-      • execRun_ctr++ (increment timestep counter)
-
-      • If execRun_ctr < execRun_limit:
-        - Load next timestep input data
-        - Loop back to CYCLE 0
-
-      • Else:
-        - exec_run_done = 1
-        - execRun_running = 0
-        - All timesteps complete!
-```
-
-**Safety Margin:** The 31-cycle wait ensures all spikes have propagated through the round-robin arbiters and FIFOs before starting the next timestep.
-
----
-
-## Part 2: Technical Reference
-
-### Execution Control Signals Reference
-
-Complete table of all `exec_*` signals that coordinate the state machines:
-
-| Signal | Width | Origin | Destination(s) | Purpose | Asserted When | Cleared When |
-|--------|-------|--------|----------------|---------|---------------|--------------|
-| **`exec_run`** | 1 bit | Command Interpreter RX | EEP, IEP, HBM TX/RX | Initiate new timestep | CI parses CMD_EXEC_STEP or starts timestep in CMD_EXEC_CONT | Automatically (pulse signal) |
-| **`exec_bram_phase1_ready`** | 1 bit | External Events Processor | HBM Processor RX | BRAM pipeline filled, ready to stream | EEP enters STATE_READ_INPUTS (after FILL_PIPE) | EEP enters STATE_FILL_PIPE (next timestep) |
-| **`exec_bram_phase1_done`** | 1 bit | External Events Processor | Internal Events Processor | External spike processing complete | bramPresent_waddr == BRAM_ADDR_LIMIT | EEP enters STATE_FILL_PIPE |
-| **`exec_uram_phase1_ready`** | 1 bit | Internal Events Processor | HBM Processor RX | URAM pipeline filled, ready to output | IEP enters STATE_PUSH_PTR_FIFO | IEP enters FILL_PIPE_PHASE1 |
-| **`exec_uram_phase1_done`** | 1 bit | Internal Events Processor | HBM Processor TX | Internal neuron pointer output complete | uram_raddr == URAM_ADDR_LIMIT | Next exec_run |
-| **`exec_hbm_tx_phase1_done`** | 1 bit | HBM Processor TX | HBM Processor RX (internal) | All pointer read commands sent | tx_curr_state == TX_STATE_PHASE1_DONE | tx_done_rst on next exec_run |
-| **`exec_hbm_tx_phase2_done`** | 1 bit | HBM Processor TX | HBM Processor RX | All synapse read commands sent | tx_curr_state == TX_STATE_PHASE2_DONE | tx_done_rst on next exec_run |
-| **`exec_hbm_rx_phase1_done`** | 1 bit | HBM Processor RX | HBM Processor TX, Spike routing logic | All pointers received from HBM | rx_next_state == RX_STATE_READ_SYNAPSE_DATA | rx_done_rst on next exec_run |
-| **`exec_hbm_rx_phase2_done`** | 1 bit | HBM Processor RX | Internal Events Processor, CI TX | All synapse data received and processed | rx_curr_state == RX_STATE_PHASE2_DONE | rx_done_rst on next exec_run |
-| **`exec_hbm_rvalidready`** | 1 bit | HBM Processor RX | EEP, IEP | HBM data valid (512-bit packet complete) | hbm_rvalid & hbm_rready & hbm_count & ~hbmFIFO_full | Every other 256-bit HBM read |
-| **`exec_hbm_rdata`** | 512 bits | HBM Processor RX | Internal Events Processor | Synaptic input data (2 × 256-bit HBM words) | When exec_hbm_rvalidready = 1 | Continuous data stream |
-| **`exec_uram_spiked`** | 16 bits | Internal Events Processor | Pointer FIFO Controller | Bit mask of neuron groups that spiked | Any neuron in group exceeds threshold | Cleared each timestep |
-| **`exec_bram_spiked`** | 8 bits | External Events Processor | Pointer FIFO Controller | Spike mask from BRAM (8 groups) | Read from bramPresent_rdata | Continuous stream during Phase 1 |
-| **`exec_iep_phase2_done`** | 1 bit | Internal Events Processor | Command Interpreter RX | Neuron updates complete | IEP finishes processing all synaptic inputs | Next exec_run |
-| **`execRun_running`** | 1 bit | Command Interpreter RX | Command Interpreter TX | Execution active flag | exec_run_rst in CI RX | exec_run_done in CI RX |
-| **`execRun_done`** | 1 bit | Command Interpreter RX | Command Interpreter TX | All timesteps complete | execRun_ctr == execRun_limit | Next execution sequence |
-| **`execRun_ctr`** | 32 bits | Command Interpreter RX | Command Interpreter TX | Current timestep number | exec_run_inc after each timestep | exec_run_rst at start |
-| **`execRun_limit`** | 32 bits | Command Interpreter RX | Command Interpreter RX | Target number of timesteps | exec_run_set from CMD_EXEC_CONT | Next execution |
-| **`execRun_timer`** | 64 bits | Command Interpreter RX | Debug/monitoring | Performance counter (clock cycles) | Every cycle while execRun_running = 1 | exec_run_rst at start |
-
----
-
-### Module-by-Module State Machine Details
-
-#### 1. Command Interpreter - The Orchestrator
-
-**File:** `command_interpreter.v`
-
-##### RX State Machine (Command Processing and Timestep Control)
-
-**States:**
-```
-RX_STATE_RESET (0)                   → Initialization
-RX_STATE_IDLE (1)                    → Waiting for command from rxFIFO
-RX_STATE_REGISTER_PCIE_AXON_DATA (2) → Loading external event data
-RX_STATE_SET_AXON_DATA (3)           → Unpacking and sending to EEP
-RX_STATE_EXEC_STEP (4)               → Pulse exec_run signal
-RX_STATE_WAIT_RUN (5)                → Wait for timestep completion
-RX_STATE_EXEC_DONE (6)               → Execution finished
-```
-
-**Key Transitions:**
-```
-IDLE → REGISTER_PCIE_AXON_DATA:
-  When: rx_command == CMD_EEP_W
-  Action: axon_addr_rst = 1, rxFIFO_rden = 1
-
-IDLE → EXEC_STEP:
-  When: rx_command == CMD_EXEC_STEP
-  Action: axon_addr_rst = 1, exec_run_rst = 1, rxFIFO_rden = 1
-
-IDLE → REGISTER_PCIE_AXON_DATA:
-  When: rx_command == CMD_EXEC_CONT
-  Action: axon_addr_rst = 1, exec_run_rst = 1, exec_run_set = 1, rxFIFO_rden = 1
-
-EXEC_STEP → WAIT_RUN:
-  When: Always (after pulsing exec_run = 1)
-  Action: exec_run = 1 (pulse)
-
-WAIT_RUN → EXEC_DONE:
-  When: wait_clks_cnt == 31 AND execRun_ctr == execRun_limit
-  Action: exec_run_done = 1
-
-WAIT_RUN → REGISTER_PCIE_AXON_DATA:
-  When: wait_clks_cnt == 31 AND execRun_ctr < execRun_limit
-  Action: exec_run_inc = 1, axon_addr_rst = 1
-
-EXEC_DONE → IDLE:
-  When: Always
-  Action: exec_run_done = 1 (latched)
-```
-
-**Key Variables:**
-
-| Variable | Width | Purpose | Update Condition |
-|----------|-------|---------|------------------|
-| `execRun_ctr` | 32 bits | Current timestep (0 to limit) | exec_run_inc = 1 |
-| `execRun_limit` | 32 bits | Total timesteps to execute | exec_run_set = 1, loaded from rxFIFO_dout[31:0] |
-| `execRun_timer` | 64 bits | Performance counter (cycles) | Every cycle while execRun_running = 1 |
-| `execRun_running` | 1 bit | Execution active flag | Set by exec_run_rst, cleared by exec_run_done |
-| `execRun_done` | 1 bit | Completion flag | Set when execRun_ctr == execRun_limit |
-| `wait_clks_cnt` | 5 bits | Safety margin counter (0-31) | Increments in WAIT_RUN when conditions met |
-| `axonEvent_addr` | 13 bits | Current axon row address | Increments in SET_AXON_DATA state |
-| `axon_data_sr` | 512 bits | Shift register for axon data | Loaded in REGISTER state, shifted in SET state |
-
-**Wait Conditions in WAIT_RUN:**
-```verilog
-if (wait_clks_cnt == wait_clks_limit) begin
-    // Safety margin reached (31 cycles)
-    if (execRun_ctr == execRun_limit)
-        // All timesteps complete
-        next_state = EXEC_DONE;
-    else
-        // More timesteps to process
-        exec_run_inc = 1;
-        next_state = REGISTER_PCIE_AXON_DATA;
-end
-
-// Increment counter when:
-if ((curr_state==WAIT_RUN) & exec_iep_phase2_done & spk2ciFIFO_empty)
-    wait_clks_cnt++;
-else
-    wait_clks_cnt = 0;
-```
-
-##### TX State Machine (Response and Spike Batching)
-
-**States:**
-```
-TX_STATE_RESET (0)           → Initialization
-TX_STATE_IDLE (1)            → Check for data to send
-TX_STATE_WAIT_FOR_SPIKES (2) → Accumulate spike batch
-TX_STATE_SEND_SPIKES (3)     → Send 512-bit spike packet
-```
-
-**Key Transitions:**
-```
-IDLE → WAIT_FOR_SPIKES:
-  When: execRun_running = 1
-  Action: spike_rst = 1 (reset batch counter)
-
-WAIT_FOR_SPIKES → SEND_SPIKES:
-  When: spike_ctr == 14 (batch full)
-  Action: Prepare 512-bit packet
-
-WAIT_FOR_SPIKES → IDLE:
-  When: execRun_done = 1 AND spikes_sent = 1
-  Action: All spikes transmitted
-
-WAIT_FOR_SPIKES → SEND_SPIKES:
-  When: execRun_done = 1 AND spikes_sent = 0
-  Action: Send final partial batch
-
-SEND_SPIKES → WAIT_FOR_SPIKES:
-  When: !txFIFO_full
-  Action: txFIFO_wren = 1, spike_rst = 1
-```
-
-**Key Variables:**
-
-| Variable | Width | Purpose | Update Condition |
-|----------|-------|---------|------------------|
-| `spike_sr` | 448 bits | Spike batch shift register (14 × 32 bits) | spike_inc = 1, shifted left |
-| `spike_ctr` | 4 bits | Current batch size (0-14) | Increments with spike_inc |
-| `spikes_sent` | 1 bit | Final batch sent flag | Cleared by spike_inc, set by spike_rst |
-
-**Spike Packet Format (512 bits):**
-```
-[511:480] = 32'hEEEE_EEEE       // Opcode (identifies spike packet)
-[479:32]  = 448-bit spike batch // 14 × 32-bit spike events
-[31:0]    = execRun_ctr         // Timestamp (current timestep number)
-
-Each 32-bit spike event:
-[31:24] = execRun_ctr[7:0]      // Sub-timestamp (lower 8 bits of timestep)
-[23:17] = 7'd0                  // Padding
-[16:0]  = neuron_address        // Which neuron spiked
-```
-
----
-
-#### 2. HBM Processor - The Memory Access Engine
-
-**File:** `hbm_processor.v`
-
-##### TX State Machine (Memory Read Command Generator)
-
-**States:**
-```
-TX_STATE_RESET (0)                          → Initialization
-TX_STATE_IDLE (1)                           → Wait for work
-TX_STATE_SEND_INPUT_READ_COMMANDS (2)       → Phase 1a: Read input pointers
-TX_STATE_SEND_OUTPUT_READ_COMMANDS (3)      → Phase 1b: Read output pointers
-TX_STATE_PHASE1_DONE (4)                    → Phase 1 complete, prepare Phase 2
-TX_STATE_POP_POINTER_FIFO (5)               → Phase 2: Get next pointer
-TX_STATE_SEND_POINTER_READ_COMMANDS (6)     → Phase 2: Read synapse data
-TX_STATE_PHASE2_DONE (7)                    → Phase 2 complete
-TX_STATE_READ_HBM_ADDR (8)                  → Host read command
-TX_STATE_WRITE_HBM_ADDR (9)                 → Host write address phase
-TX_STATE_WRITE_HBM_DATA (10)                → Host write data phase
-TX_STATE_WRITE_HBM_RESP (11)                → Host write response phase
-```
-
-**Key Transitions (Execution Path):**
-```
-IDLE → SEND_INPUT_READ_COMMANDS:
-  When: exec_run = 1
-  Action: tx_done_rst = 1, tx_addr_rst = 1
-
-SEND_INPUT_READ_COMMANDS → SEND_OUTPUT_READ_COMMANDS:
-  When: hbm_arready = 1 AND tx_addr == INPUT_ADDR_LIMIT
-  Action: tx_addr_inc = 1, tx_addr_rst = 1, tx_select_inc = 1
-
-SEND_OUTPUT_READ_COMMANDS → PHASE1_DONE:
-  When: hbm_arready = 1 AND tx_addr == OUTPUT_ADDR_LIMIT
-  Action: tx_addr_inc = 1
-
-PHASE1_DONE → POP_POINTER_FIFO:
-  When: Always
-  Action: tx_phase_inc = 1 (toggle to Phase 2), tx_ptr_ctr_rst = 1
-
-POP_POINTER_FIFO → SEND_POINTER_READ_COMMANDS:
-  When: !ptrFIFO_empty AND rx_phase1_done = 1
-  Action: ptr_addr_set = 1, ptrFIFO_rden = 1
-
-POP_POINTER_FIFO → PHASE2_DONE:
-  When: wait_clks_cnt == 255 AND ptrFIFO_empty
-  Action: Safety timer expired, all pointers processed
-
-SEND_POINTER_READ_COMMANDS → POP_POINTER_FIFO:
-  When: hbm_arready = 1 AND ptr_ctr[8:4] == ptr_len[8:4]
-  Action: ptr_addr_inc = 1 (current pointer exhausted)
-
-PHASE2_DONE → IDLE:
-  When: Always
-  Action: tx_phase_inc = 1 (toggle back to Phase 1)
-```
-
-**Key Variables:**
-
-| Variable | Width | Purpose | Update Condition | Range |
-|----------|-------|---------|------------------|-------|
-| `tx_phase` | 1 bit | Phase selector (0=pointers, 1=synapses) | tx_phase_inc = 1 | 0-1 |
-| `tx_select` | 1 bit | Phase 1: input (0) or output (1) | tx_select_inc = 1 | 0-1 |
-| `tx_addr` | 10 bits | Phase 1: group address counter | tx_addr_inc = 1 | 0-1023 |
-| `ptr_addr` | 23 bits | Phase 2: synapse block address | ptr_addr_inc, ptr_addr_set | 0-8M |
-| `ptr_len` | 9 bits | Phase 2: synapses in current pointer | ptr_addr_set (from ptrFIFO) | 0-511 |
-| `ptr_ctr` | 9 bits | Phase 2: progress within pointer | ptr_addr_inc | 0-511 |
-| `ptr_burst` | 4 bits | Phase 2: current burst length | Calculated | 0-15 |
-| `tx_ptr_ctr` | 23 bits | Phase 2: total synapse blocks sent | ptr_addr_inc | 0-8M |
-| `tx_phase1_done` | 1 bit | Phase 1 commands complete flag | State = PHASE1_DONE | 0-1 |
-| `tx_phase2_done` | 1 bit | Phase 2 commands complete flag | State = PHASE2_DONE | 0-1 |
-
-**HBM Read Address Calculation:**
+**What gets sent:**
+1. **Init packet (64 bytes):** Opcode 0x01, tells FPGA "input data incoming"
+2. **Data packet (64 bytes):** Opcode 0x00, contains 256-bit one-hot mask
+   - Byte 0 = 0x07 (bits 0,1,2 set for axons a0,a1,a2)
+   - Bytes 1-31 = 0x00
+   - Tail: padding + coreID + opcode
+
+#### Verilog: command_interpreter Receives Input
+
+File: `hardware_code/gopa/CRI_proj/command_interpreter.v` (lines 200-280, conceptual)
 
 ```verilog
-// Phase 1 (Pointer Reads):
-if (~tx_phase) begin
-    hbm_araddr = {5'd0, {8'd0, tx_select, tx_addr, 4'd0}, 5'd0};
-    // Breakdown:
-    // [32:28] = 5'd0           (upper padding)
-    // [27:20] = 8'd0           (padding)
-    // [19]    = tx_select      (0=inputs, 1=outputs)
-    // [18:9]  = tx_addr[9:0]   (group address)
-    // [8:5]   = 4'd0           (within-group offset)
-    // [4:0]   = 5'd0           (32-byte alignment)
+// State machine receives packets from Input FIFO (rxFIFO from pcie2fifos)
+always @(posedge aclk) begin
+    case (rx_state)
+        RX_IDLE: begin
+            if (!rxFIFO_empty) begin
+                rxFIFO_rd_en <= 1'b1;
+                rx_state <= RX_READ_PACKET;
+            end
+        end
+
+        RX_READ_PACKET: begin
+            packet <= rxFIFO_dout[511:0];
+            opcode <= rxFIFO_dout[511:504];  // Top 8 bits
+            coreID <= rxFIFO_dout[503:496];  // Next 8 bits
+            payload <= rxFIFO_dout[495:0];   // Remaining 496 bits
+            rx_state <= RX_PROCESS_OPCODE;
+        end
+
+        RX_PROCESS_OPCODE: begin
+            case (opcode)
+                8'h01: begin  // CMD_EEP_W_INIT - Init input packet
+                    // Prepare to receive data packet
+                    rx_state <= RX_IDLE;  // Wait for next packet
+                end
+
+                8'h00: begin  // CMD_EEP_W - Input data packet
+                    // Extract 256-bit one-hot mask from payload
+                    axonEvent_data <= payload[255:0];
+
+                    // Calculate write address (for BRAM Future buffer)
+                    axonEvent_addr <= bram_write_row;
+
+                    // Signal external_events_processor to write to Future buffer
+                    axonEvent_we <= 1'b1;
+
+                    rx_state <= RX_IDLE;
+                end
+            endcase
+        end
+    endcase
 end
 
-// Phase 2 (Synapse Reads):
-else begin
-    hbm_araddr = {5'd0, ptr_addr[22:0], 5'd0};
-    // Breakdown:
-    // [32:28] = 5'd0           (upper padding)
-    // [27:5]  = ptr_addr       (synapse block address)
-    // [4:0]   = 5'd0           (32-byte alignment)
-end
+// Signals to external_events_processor
+// These write to the FUTURE buffer while execution reads PRESENT buffer
+assign eep_wr_en = axonEvent_we;
+assign eep_wr_addr = axonEvent_addr;
+assign eep_wr_data = axonEvent_data;
 ```
 
-**Burst Length Calculation:**
+#### Verilog: external_events_processor Double-Buffered BRAM
+
+File: `hardware_code/gopa/CRI_proj/external_events_processor.v` (lines 100-200, conceptual)
 
 ```verilog
-// Phase 1:
-if (~tx_phase) begin
-    if (~tx_select) begin
-        // Reading input pointers
-        if (tx_addr == INPUT_ADDR_LIMIT)
-            hbm_arlen = INPUT_ADDR_MOD;  // Last burst (partial)
-        else
-            hbm_arlen = 4'hF;  // 15 = 16 words (full burst)
+// Double-buffered BRAM for external events
+// Present buffer: Read during execution
+// Future buffer: Written by host for next timestep
+
+reg bram_select;  // 0 = BRAM0 is Present, BRAM1 is Future
+                  // 1 = BRAM1 is Present, BRAM0 is Future
+
+// BRAM0: 8K entries × 16 bits (or 16K × 8 bits depending on variant)
+RAMB36E2 #(
+    .ADDR_WIDTH(13),
+    .DATA_WIDTH(16)
+) bram0 (
+    .CLKA(aclk),
+    .ADDRA(bram0_addr),
+    .DINA(bram0_din),
+    .DOUTA(bram0_dout),
+    .WEA(bram0_we),
+    .ENA(1'b1)
+);
+
+// BRAM1: Identical to BRAM0
+RAMB36E2 #(
+    .ADDR_WIDTH(13),
+    .DATA_WIDTH(16)
+) bram1 (
+    .CLKA(aclk),
+    .ADDRA(bram1_addr),
+    .DINA(bram1_din),
+    .DOUTA(bram1_dout),
+    .WEA(bram1_we),
+    .ENA(1'b1)
+);
+
+// Write logic: Always write to Future buffer
+always @(*) begin
+    if (bram_select == 0) begin
+        // BRAM0 is Present, BRAM1 is Future
+        bram1_addr = eep_wr_addr;
+        bram1_din = eep_wr_data;
+        bram1_we = eep_wr_en;
     end else begin
-        // Reading output pointers
-        if (tx_addr == OUTPUT_ADDR_LIMIT)
-            hbm_arlen = OUTPUT_ADDR_MOD;
-        else
-            hbm_arlen = 4'hF;
+        // BRAM1 is Present, BRAM0 is Future
+        bram0_addr = eep_wr_addr;
+        bram0_din = eep_wr_data;
+        bram0_we = eep_wr_en;
     end
 end
 
-// Phase 2:
-else begin
-    hbm_arlen = ptr_burst;
-    // Where ptr_burst = (ptr_ctr[8:4] == ptr_len[8:4]) ? ptr_len[3:0] : 4'hf
-    // Meaning: Last burst gets remainder, others get 15 (16 words)
+// Read logic: Always read from Present buffer
+always @(*) begin
+    if (bram_select == 0) begin
+        // BRAM0 is Present
+        bram0_addr = exec_rd_addr;
+        bram0_we = 1'b0;
+        exec_rd_data = bram0_dout;
+    end else begin
+        // BRAM1 is Present
+        bram1_addr = exec_rd_addr;
+        bram1_we = 1'b0;
+        exec_rd_data = bram1_dout;
+    end
+end
+
+// Buffer role reassignment on execute command
+always @(posedge aclk) begin
+    if (execute_cmd) begin
+        bram_select <= ~bram_select;  // Flip role assignment bit
+        // Buffer that was Future is now designated Present
+        // Buffer that was Present is now designated Future
+        // NO data is copied - just a pointer swap
+    end
 end
 ```
 
-##### RX State Machine (Memory Read Response Handler)
-
-**States:**
-```
-RX_STATE_RESET (0)                → Initialization
-RX_STATE_IDLE (1)                 → Wait for work
-RX_STATE_WAIT_BRAM_PIPELINE (2)   → Wait for EEP ready
-RX_STATE_READ_INPUT_POINTERS (3)  → Phase 1a: Receive input pointers
-RX_STATE_WAIT_URAM_PIPELINE (4)   → Wait for IEP ready
-RX_STATE_READ_OUTPUT_POINTERS (5) → Phase 1b: Receive output pointers
-RX_STATE_PHASE1_DONE (6)          → Phase 1 complete
-RX_STATE_READ_SYNAPSE_DATA (7)    → Phase 2: Receive synapse data
-RX_STATE_PHASE2_DONE (8)          → Phase 2 complete
-RX_STATE_READ_HBM_RESP (9)        → Host read response
-```
-
-**Key Transitions:**
-```
-IDLE → WAIT_BRAM_PIPELINE:
-  When: exec_run = 1
-  Action: rx_done_rst = 1, rx_addr_rst = 1
-
-WAIT_BRAM_PIPELINE → READ_INPUT_POINTERS:
-  When: exec_bram_phase1_ready = 1
-  Action: None (just wait for EEP pipeline to fill)
-
-READ_INPUT_POINTERS → WAIT_URAM_PIPELINE:
-  When: hbm_rvalid = 1 AND rx_addr == {INPUT_ADDR_LIMIT, INPUT_ADDR_MOD}
-  Action: rx_addr_inc = 1, rx_addr_rst = 1
-
-WAIT_URAM_PIPELINE → READ_OUTPUT_POINTERS:
-  When: exec_uram_phase1_ready = 1
-  Action: None (wait for IEP pipeline to fill)
-
-READ_OUTPUT_POINTERS → PHASE1_DONE:
-  When: hbm_rvalid = 1 AND rx_addr == {OUTPUT_ADDR_LIMIT, OUTPUT_ADDR_MOD}
-  Action: rx_addr_inc = 1
-
-PHASE1_DONE → READ_SYNAPSE_DATA:
-  When: Always
-  Action: rx_phase1_done = 1
-
-READ_SYNAPSE_DATA → PHASE2_DONE:
-  When: tx_phase2_done = 1 AND rx_ptr_ctr == tx_ptr_ctr
-  Action: All synapse data received
-
-PHASE2_DONE → IDLE:
-  When: Always
-  Action: rx_phase2_done = 1
-```
-
-**Key Variables:**
-
-| Variable | Width | Purpose | Update Condition |
-|----------|-------|---------|------------------|
-| `rx_addr` | 14 bits | Phase 1: pointer word counter | rx_addr_inc = 1 |
-| `rx_ptr_ctr` | 23 bits | Phase 2: synapse blocks received | Increments with each hbm_rvalid |
-| `rx_phase1_done` | 1 bit | Phase 1 complete flag | State = READ_SYNAPSE_DATA |
-| `rx_phase2_done` | 1 bit | Phase 2 complete flag | State = PHASE2_DONE |
-| `hbm_count` | 1 bit | 512-bit packet assembly (0=1st word, 1=2nd word) | Toggles with each hbm_rvalid |
-| `hbm_rdata_lower` | 256 bits | Stores 1st 256-bit word for packet | hbm_count = 0 |
-
-**Data Flow in RX:**
-
-```
-hbm_rdata (256 bits from HBM)
-    │
-    ├─> (If hbm_count = 0) Store in hbm_rdata_lower
-    │
-    └─> (If hbm_count = 1) Combine with hbm_rdata_lower
-            │
-            ▼
-        exec_hbm_rdata (512 bits) = {hbm_rdata, hbm_rdata_lower}
-            │
-            ├─> Internal Events Processor (synaptic inputs)
-            │   └─> 16 groups × 32 bits each
-            │
-            └─> Spike Routing Logic (extract spike flags)
-                └─> 8 synapse entries × spike_flag bit
-```
+**Physical operation:**
+- Host writes to Future buffer: `bram_din = 256'h0000...0007` (bits 0,1,2 set)
+- On execute command: `bram_select` flips (role reassignment, no data movement)
+- Execution reads from the buffer now designated Present
+- Host can immediately start writing next timestep to buffer now designated Future
 
 ---
 
-#### 3. External Events Processor - The Input Handler
+### Triggering Execution: execute() Command
 
-**File:** `external_events_processor.v`
+After writing inputs, we trigger execution:
 
-##### BRAM Pipeline State Machine
+```python
+# In hs_bridge/network.py
+def run_step(self, inputs):
+    # Write inputs to Future buffer
+    fpga_controller.input_user(inputs, numAxons, coreID)
 
-**States:**
-```
-STATE_RESET (0)       → Initialization
-STATE_IDLE (1)        → Wait for exec_run
-STATE_FILL_PIPE (2)   → Fill 3-stage BRAM read pipeline
-STATE_READ_INPUTS (3) → Stream spike data to HBM
-STATE_PHASE1_DONE (4) → Processing complete
-```
+    # Trigger execution (reassigns buffer roles, starts Phase 1)
+    fpga_controller.execute(coreID)
 
-**Key Transitions:**
-```
-RESET → IDLE:
-  When: Always
-  Action: bramPresent_addr_rst = 1
-
-IDLE → FILL_PIPE:
-  When: exec_run = 1
-  Action: bramPresent_addr_rst = 1, bram_select toggles
-
-FILL_PIPE → READ_INPUTS:
-  When: bramPresent_raddr >= PIPE_DEPTH (3)
-  Action: exec_bram_phase1_ready = 1
-
-READ_INPUTS → PHASE1_DONE:
-  When: exec_hbm_rvalidready = 1 AND bramPresent_waddr == BRAM_ADDR_LIMIT
-  Action: exec_bram_phase1_done = 1
-
-PHASE1_DONE → IDLE:
-  When: Always
-  Action: None
+    # Collect results
+    spikes = fpga_controller.flush_spikes(coreID)
+    return spikes
 ```
 
-**Key Variables:**
+#### Python Code: fpga_controller.execute()
 
-| Variable | Width | Purpose | Update Condition |
-|----------|-------|---------|------------------|
-| `bram_select` | 1 bit | Double-buffer toggle (0=bram0 present, 1=bram1 present) | Toggles on exec_run |
-| `bramPresent_raddr` | 14 bits | Read address (leads by PIPE_DEPTH) | Increments during FILL_PIPE and READ_INPUTS |
-| `bramPresent_waddr` | 14 bits | Write address (clears after reading) | Lags behind raddr by 3 cycles |
-| `bramFuture_waddr[2:0]` | 14 bits × 3 | 3-stage write pipeline for incoming spikes | Shifts each cycle when setArray_go = 1 |
-| `bramFuture_wdata[2:0]` | 8 bits × 3 | Spike mask data in pipeline | Shifts each cycle, OR on collision |
+File: `hs_bridge/FPGA_Execution/fpga_controller.py` (lines 872-892)
 
-**Double-Buffering Mechanism:**
+```python
+def execute(simDump=False, coreID=0):
+    """Runs a single step of the network"""
 
-```
-Timestep N:
-  Present BRAM = bram0 (reading and clearing)
-  Future BRAM = bram1 (receiving new spikes for N+1)
+    coreBits = np.binary_repr(coreID, 5) + 3*'0'
+    command = np.array([0]*62 + [int(coreBits, 2), 6], dtype=np.uint64)
+    # Opcode 0x06 = CMD_EXEC (execute timestep)
 
-exec_run pulse:
-  bram_select toggles
-
-Timestep N+1:
-  Present BRAM = bram1 (now reading what was written during N)
-  Future BRAM = bram0 (now receiving new spikes for N+2)
+    exitCode = dmadump.dma_dump_write(command, len(command),
+                                       1, 0, 0, 0, dmadump.DmaMethodNormal)
 ```
 
-**Pipeline Hazard Resolution:**
+#### Verilog: command_interpreter Triggers Execution
 
-The 3-stage write pipeline prevents data loss when multiple spikes arrive for the same address while a write is in progress:
+File: `hardware_code/gopa/CRI_proj/command_interpreter.v` (lines 300-350, conceptual)
 
 ```verilog
-if (setArray_go) begin
-    // Check for address collisions in pipeline
-    if (setArray_addr == bramFuture_waddr[2])
-        // Collision at stage 2: OR new spike with pending
-        bramFuture_wdata[1] <= bramFuture_wdata[2] | setArray_data;
+always @(posedge aclk) begin
+    case (opcode)
+        8'h06: begin  // CMD_EXEC - Execute timestep
+            // Set execution control signals
+            exec_run <= 1'b1;          // Enable execution
+            execRun_ctr <= execRun_ctr + 1;  // Increment timestep counter
 
-    else if (setArray_addr == bramFuture_waddr[1])
-        // Collision at stage 1: OR new spike
-        bramFuture_wdata[0] <= bramFuture_wdata[1] | setArray_data;
+            // Trigger external_events_processor Phase 1a
+            exec_bram_phase1_start <= 1'b1;  // One-cycle pulse
 
-    else if (setArray_addr == bramFuture_waddr[0])
-        // Collision at stage 0: will be ORed at BRAM level
-        // (commented logic in production code)
+            rx_state <= RX_IDLE;
+        end
+    endcase
+end
 
-    else
-        // No collision: add new entry to pipeline
-        bramFuture_wdata[2] <= setArray_data;
+// Phase 1a start signal to external_events_processor
+assign eep_phase1_start = exec_bram_phase1_start;
 ```
 
 ---
 
-#### 4. Internal Events Processor - The Neuron State Manager
+### Phase 1a: External Event Processing (Pointer Collection)
 
-**File:** `internal_events_processor.v`
+The key insight: **Phase 1a ONLY collects HBM addresses (pointers) of synapse rows to read**. It does NOT read the synapse data itself.
 
-##### URAM State Machine
+#### Verilog: external_events_processor Phase 1a State Machine
 
-**States:**
-```
-STATE_RESET (0)              → Initialization
-STATE_IDLE (1)               → Wait for exec_run
-STATE_FILL_PIPE_PHASE1 (2)   → Fill URAM read pipeline
-STATE_WAIT_BRAM_PHASE1_DONE (3) → Wait for external events complete
-STATE_PUSH_PTR_FIFO (4)      → Output neuron pointers
-STATE_PHASE1_DONE (5)        → Phase 1 complete
-STATE_POP_PTR_FIFO (6)       → Get pointer from FIFO (Phase 2)
-STATE_WAIT_SYNAPSE (7)       → Wait for synapse data
-STATE_PHASE2_DONE (8)        → Phase 2 complete, updates written
-```
-
-**Key Transitions:**
-```
-RESET → IDLE:
-  When: Always
-  Action: uram_raddr = 0
-
-IDLE → FILL_PIPE_PHASE1:
-  When: exec_run = 1
-  Action: uram_raddr_rst = 1
-
-FILL_PIPE_PHASE1 → WAIT_BRAM_PHASE1_DONE:
-  When: uram_raddr >= PIPE_DEPTH (3)
-  Action: exec_uram_phase1_ready = 1
-
-WAIT_BRAM_PHASE1_DONE → PUSH_PTR_FIFO:
-  When: exec_bram_phase1_done = 1
-  Action: None (can start outputting pointers)
-
-PUSH_PTR_FIFO → PHASE1_DONE:
-  When: uram_raddr == URAM_ADDR_LIMIT
-  Action: exec_uram_phase1_done = 1
-
-PHASE1_DONE → WAIT_SYNAPSE (or continuous processing):
-  When: Always
-  Action: Prepare for Phase 2
-
-WAIT_SYNAPSE → PHASE2_DONE:
-  When: exec_hbm_rx_phase2_done = 1
-  Action: exec_uram_phase2_done = 1, exec_iep_phase2_done = 1
-
-PHASE2_DONE → IDLE:
-  When: Always
-  Action: Ready for next timestep
-```
-
-**Key Variables:**
-
-| Variable | Width | Purpose | Update Condition |
-|----------|-------|---------|------------------|
-| `uram_raddr` | 13 bits | Global read address (all 16 groups) | Increments during Phase 1 |
-| `uram_rden` | 1 bit | Global read enable | 1 during Phase 1 |
-| `uram_waddr[15:0]` | 12 bits × 16 | Individual write addresses per group | Set during Phase 2 updates |
-| `uram_wren[15:0]` | 1 bit × 16 | Individual write enables per group | 1 when updating group |
-| `uram_wdata_reg[15:0]` | 72 bits × 16 | Updated neuron data (2 neurons per word) | Calculated during Phase 2 |
-| `exec_uram_spiked` | 16 bits | Spike mask (bit per group) | Set when neuron exceeds threshold |
-
-**Neuron Update Process (Phase 2):**
+File: `hardware_code/gopa/CRI_proj/external_events_processor.v` (simplified)
 
 ```verilog
-When exec_hbm_rvalidready = 1:
-    // Extract 16 group inputs from 512-bit packet
-    for (group = 0 to 15) {
-        input_upper[group] = exec_hbm_rdata[group*32 + 31:group*32 + 16];
-        input_lower[group] = exec_hbm_rdata[group*32 + 15:group*32 + 0];
+// Phase 1a: Read BRAM, generate spike mask, trigger HBM pointer reads
 
-        // Read current neuron potential from URAM
-        old_potential = uram_rdata[group];
+reg [3:0] state;
+localparam EEP_IDLE = 0;
+localparam EEP_FILL_PIPE = 1;
+localparam EEP_READ_BRAM = 2;
+localparam EEP_GEN_MASK = 3;
+localparam EEP_PHASE1_DONE = 4;
 
-        // Add synaptic input
-        new_potential_upper = old_potential[71:36] + sign_extend(input_upper);
-        new_potential_lower = old_potential[35:0]  + sign_extend(input_lower);
+reg [12:0] bram_row_counter;
+reg [15:0] current_mask;
+reg [15:0] exec_bram_spiked_reg;
 
-        // Apply neuron model (leak, reset, etc.)
-        // Model 0: Memoryless
-        // Model 1: Incremental
-        // Model 2: Leaky I&F
-        // Model 3: Non-leaky I&F
+always @(posedge aclk) begin
+    case (state)
+        EEP_IDLE: begin
+            if (eep_phase1_start) begin
+                // Buffer role reassignment already happened
+                bram_row_counter <= 13'b0;
+                exec_bram_spiked_reg <= 16'b0;
+                state <= EEP_FILL_PIPE;
+            end
+        end
 
-        // Check threshold
-        if (new_potential_upper > threshold)
-            exec_uram_spiked[group] = 1;
-        if (new_potential_lower > threshold)
-            exec_uram_spiked[group] = 1;
+        EEP_FILL_PIPE: begin
+            // BRAM has 3-cycle read latency, fill pipeline
+            exec_rd_addr <= bram_row_counter;
+            pipeline_ctr <= 3'd0;
+            state <= EEP_READ_BRAM;
+        end
 
-        // Write back
-        uram_wdata_reg[group] = {new_potential_upper, new_potential_lower};
-        uram_wren[group] = 1;
-    }
+        EEP_READ_BRAM: begin
+            // Wait for pipeline to fill
+            if (pipeline_ctr == 3'd2) begin
+                current_mask <= exec_rd_data[15:0];
+                state <= EEP_GEN_MASK;
+            end else begin
+                pipeline_ctr <= pipeline_ctr + 1;
+            end
+        end
+
+        EEP_GEN_MASK: begin
+            // Generate 16-bit spike mask for neuron groups
+            // Each bit represents one neuron group (0-15)
+            // For our small network, only bit 0 will be set
+
+            // Check if any axons in this row are active
+            if (current_mask != 16'h0000) begin
+                // Axons active in row 0 → neuron group 0
+                exec_bram_spiked_reg[0] <= 1'b1;
+            end
+
+            // For larger networks, would scan more rows
+            bram_row_counter <= bram_row_counter + 1;
+            if (bram_row_counter == max_rows) begin
+                state <= EEP_PHASE1_DONE;
+            end else begin
+                state <= EEP_READ_BRAM;
+            end
+        end
+
+        EEP_PHASE1_DONE: begin
+            // Output spike mask to pointer_fifo_controller
+            exec_bram_spiked <= exec_bram_spiked_reg;
+            exec_bram_phase1_done <= 1'b1;  // Signal completion
+            state <= EEP_IDLE;
+        end
+    endcase
+end
+```
+
+**What this outputs:**
+- `exec_bram_spiked[15:0]` = 16-bit mask indicating which neuron groups have active axons
+- For our network: `exec_bram_spiked = 16'h0001` (only group 0 active)
+- This signal goes to `hbm_processor` and `pointer_fifo_controller`
+
+**Critically: external_events_processor does NOT read HBM or synapse data!**
+
+---
+
+#### Verilog: hbm_processor Phase 1a - Read Axon Pointers
+
+File: `hardware_code/gopa/CRI_proj/hbm_processor.v` (lines 400-500, conceptual)
+
+```verilog
+// Phase 1a: Read axon pointers from HBM Region 1
+// Uses exec_bram_spiked to determine which axons to read
+
+reg [2:0] phase1_state;
+localparam P1_IDLE = 0;
+localparam P1_READ_PTRS = 1;
+localparam P1_WAIT_PTRS = 2;
+localparam P1_SEND_TO_PFC = 3;
+
+reg [3:0] group_index;
+reg [22:0] ptr_addr;
+
+always @(posedge aclk) begin
+    case (phase1_state)
+        P1_IDLE: begin
+            if (exec_bram_phase1_done) begin
+                group_index <= 4'b0;
+                phase1_state <= P1_READ_PTRS;
+            end
+        end
+
+        P1_READ_PTRS: begin
+            // Check if this group has active axons
+            if (exec_bram_spiked[group_index]) begin
+                // Calculate HBM address for axon pointers
+                // Region 1 base address + group offset
+                ptr_addr <= {AXN_PTR_BASE, group_index, 5'b00000};
+
+                // Issue AXI4 read to HBM
+                hbm_arvalid <= 1'b1;
+                hbm_araddr <= {5'd0, ptr_addr, 5'b00000};  // 33-bit address
+                hbm_arlen <= 8'd0;   // 1 beat (256 bits = 16 pointers)
+                hbm_arsize <= 3'd5;  // 32 bytes
+
+                phase1_state <= P1_WAIT_PTRS;
+            end else begin
+                // No activity in this group, skip
+                group_index <= group_index + 1;
+                if (group_index == 4'd15)
+                    phase1_state <= P1_IDLE;  // Done with all groups
+            end
+        end
+
+        P1_WAIT_PTRS: begin
+            // Wait for HBM read completion
+            if (hbm_rvalid) begin
+                // Got 256 bits = 8 × 32-bit pointers (16 pointers with upper bits)
+                ptr_data <= hbm_rdata[255:0];
+                phase1_state <= P1_SEND_TO_PFC;
+            end
+        end
+
+        P1_SEND_TO_PFC: begin
+            // Forward pointer data to pointer_fifo_controller
+            hbm2pfc_data <= {256'b0, ptr_data};  // Pad to 512 bits
+            hbm2pfc_valid <= 1'b1;
+
+            // Continue with next group
+            group_index <= group_index + 1;
+            if (group_index == 4'd15)
+                phase1_state <= P1_IDLE;  // Phase 1a complete
+            else
+                phase1_state <= P1_READ_PTRS;
+        end
+    endcase
+end
+```
+
+**Example for our network (group 0 only):**
+```
+Input: exec_bram_spiked = 16'h0001 (group 0 active)
+
+Cycle N: P1_READ_PTRS
+  group_index = 0
+  exec_bram_spiked[0] = 1 (active)
+  hbm_araddr = {5'd0, 23'h000000, 5'd0} (Region 1, group 0)
+
+Cycle N+100: P1_WAIT_PTRS (after HBM latency)
+  hbm_rdata[255:0] contains 8 × 32-bit axon pointers:
+    ptr[0] = {9'b000000001, 23'h8000} (axon 0: 1 row at 0x8000)
+    ptr[1] = {9'b000000001, 23'h8001} (axon 1: 1 row at 0x8001)
+    ptr[2] = {9'b000000001, 23'h8002} (axon 2: 1 row at 0x8002)
+    ptr[3-7] = 32'h0 (unused)
+
+Cycle N+101: P1_SEND_TO_PFC
+  hbm2pfc_data = 512-bit packet with pointer data
+  hbm2pfc_valid = 1
+```
+
+**Key point:** We now have ADDRESSES of where synapses are stored, but haven't read the synapses yet!
+
+---
+
+#### Verilog: pointer_fifo_controller Phase 1 - Demultiplex Pointers
+
+File: `hardware_code/gopa/CRI_proj/pointer_fifo_controller.v` (lines 200-300, conceptual)
+
+```verilog
+// Phase 1: Demultiplex HBM pointer data to 16 FIFOs
+// Uses exec_bram_spiked to determine which FIFOs to write
+
+reg [255:0] ptr_row_data;
+reg [31:0] pointer [0:7];  // 8 pointers per HBM row
+reg [3:0] target_fifo;
+
+always @(posedge aclk) begin
+    if (hbm2pfc_valid) begin
+        ptr_row_data <= hbm2pfc_data[255:0];
+
+        // Extract 8 pointers from 256-bit data
+        for (i = 0; i < 8; i = i + 1) begin
+            pointer[i] = ptr_row_data[(i*32)+:32];
+
+            if (pointer[i] != 32'h0) begin
+                // Valid pointer
+                // Format: [31:23]=length, [22:0]=base_address
+
+                // Determine which FIFO to write to
+                // Based on which group had activity (exec_bram_spiked)
+                target_fifo = find_first_set_bit(exec_bram_spiked);
+
+                // Write 32-bit pointer to FIFO
+                ptrFIFO_wr_en[target_fifo] <= 1'b1;
+                ptrFIFO_din[target_fifo] <= pointer[i];
+            end
+        end
+    end
+end
+
+// 16 pointer FIFOs (one per neuron group)
+genvar g;
+generate
+    for (g = 0; g < 16; g = g + 1) begin : gen_ptr_fifos
+        FIFO_SYNC #(
+            .DATA_WIDTH(32),  // 32-bit HBM address
+            .DEPTH(512)
+        ) ptr_fifo (
+            .WR_CLK(aclk),        // Write at 225 MHz
+            .WR_EN(ptrFIFO_wr_en[g]),
+            .DIN(ptrFIFO_din[g]),
+            .FULL(ptrFIFO_full[g]),
+
+            .RD_CLK(aclk),        // Read at 225 MHz (same domain)
+            .RD_EN(ptrFIFO_rd_en[g]),
+            .DOUT(ptrFIFO_dout[g]),
+            .EMPTY(ptrFIFO_empty[g])
+        );
+    end
+endgenerate
+```
+
+**Example for our network:**
+```
+After Phase 1a completes, ptrFIFO[0] contains:
+  Entry 0: 32'h0080_8000 = {9'd1, 23'h8000} (axon 0 pointer)
+  Entry 1: 32'h0080_8001 = {9'd1, 23'h8001} (axon 1 pointer)
+  Entry 2: 32'h0080_8002 = {9'd1, 23'h8002} (axon 2 pointer)
+
+ptrFIFO[1-15]: Empty (no activity in other groups)
+```
+
+**Critical understanding:** These FIFOs contain **HBM addresses** (pointers), NOT synapse data!
+
+---
+
+### Phase 1b: Internal Event Processing (If Neurons Spiked)
+
+If neurons spiked during Phase 2, they trigger Phase 1b to collect their output pointers.
+
+#### Verilog: internal_events_processor Spike Detection
+
+File: `hardware_code/gopa/CRI_proj/internal_events_processor.v` (lines 600-700, conceptual)
+
+```verilog
+// During Phase 2 neuron updates, track which neurons spike
+// Output exec_uram_spiked mask for Phase 1b
+
+reg [15:0] uram_spiked_mask;
+
+always @(posedge aclk450) begin
+    if (neuron_spike_detected) begin
+        // Neuron in group X spiked
+        neuron_group = spiked_neuron_addr[16:13];  // Top 4 bits
+        uram_spiked_mask[neuron_group] <= 1'b1;
+    end
+end
+
+// At end of Phase 2, output spike mask
+assign exec_uram_spiked = uram_spiked_mask;
+assign exec_uram_phase1_done = phase2_complete;
+```
+
+**Example after hidden neurons spike:**
+```
+Neurons h0-h4 all spiked (addresses 0-4, all in group 0)
+exec_uram_spiked = 16'h0001 (group 0 has spiking neurons)
+```
+
+#### Verilog: hbm_processor Phase 1b - Read Neuron Pointers
+
+This is nearly identical to Phase 1a, but reads from HBM Region 2 instead of Region 1:
+
+```verilog
+// Phase 1b: Read neuron pointers from HBM Region 2
+
+always @(posedge aclk) begin
+    case (phase1b_state)
+        P1B_IDLE: begin
+            if (exec_uram_phase1_done) begin
+                group_index <= 4'b0;
+                phase1b_state <= P1B_READ_PTRS;
+            end
+        end
+
+        P1B_READ_PTRS: begin
+            if (exec_uram_spiked[group_index]) begin
+                // Read neuron pointers from Region 2
+                ptr_addr <= {NRN_PTR_BASE, group_index, 5'b00000};
+
+                hbm_arvalid <= 1'b1;
+                hbm_araddr <= {5'd0, ptr_addr, 5'b00000};
+
+                phase1b_state <= P1B_WAIT_PTRS;
+            end
+            // ... (same pattern as Phase 1a)
+        end
+    endcase
+end
+```
+
+**Result:** More pointers added to the same ptrFIFOs, now containing both axon and neuron output pointers.
+
+---
+
+### Phase 2: Synaptic Processing and Neuron Updates
+
+Now we read the actual synapses using the pointers we collected!
+
+#### Verilog: pointer_fifo_controller Round-Robin Read
+
+File: `hardware_code/gopa/CRI_proj/pointer_fifo_controller.v` (lines 400-500, conceptual)
+
+```verilog
+// Phase 2: Multiplex (round-robin read) from 16 FIFOs to HBM processor
+
+reg [3:0] rr_counter;  // Round-robin counter (0-15)
+
+always @(posedge aclk) begin
+    if (phase2_active) begin
+        // Check current FIFO
+        if (!ptrFIFO_empty[rr_counter]) begin
+            // Read pointer from this FIFO
+            ptrFIFO_rd_en[rr_counter] <= 1'b1;
+            current_ptr <= ptrFIFO_dout[rr_counter];
+
+            // Send to HBM processor
+            pfc2hbm_ptr <= current_ptr;
+            pfc2hbm_valid <= 1'b1;
+        end
+
+        // Move to next FIFO
+        rr_counter <= (rr_counter == 4'd15) ? 4'd0 : rr_counter + 1;
+    end
+end
+```
+
+**Example execution:**
+```
+Cycle 0: Check ptrFIFO[0] → not empty
+         Pop 32'h0080_8000 (axon 0 pointer)
+         Send to hbm_processor
+
+Cycle 5: Check ptrFIFO[1] → empty, skip
+Cycle 6: Check ptrFIFO[2] → empty, skip
+...
+Cycle 21: Check ptrFIFO[0] again → not empty
+          Pop 32'h0080_8001 (axon 1 pointer)
 ```
 
 ---
 
-### FIFO Usage and Data Flow
+#### Verilog: hbm_processor Phase 2 - Read Synapses
 
-Complete reference of all FIFOs in the system:
+File: `hardware_code/gopa/CRI_proj/hbm_processor.v` (lines 600-800, conceptual)
 
-#### Input Path (Host → FPGA)
+```verilog
+// Phase 2: Use pointers to read synapse data from HBM Region 3
 
-| FIFO Name | Width | Depth | Source | Consumer | Format | Purpose |
-|-----------|-------|-------|--------|----------|--------|---------|
-| **rxFIFO** | 512 bits | 512 | pcie2fifos (Host PC) | Command Interpreter RX | [511:504]=opcode, [503:0]=payload | Incoming command queue |
-| **ci2hbm** | 280 bits | Variable | Command Interpreter RX | HBM Processor TX | [279]=R/W, [278:256]=addr, [255:0]=data | Host HBM access commands |
-| **ci2iep** | 54 bits | Variable | Command Interpreter RX | Internal Events Processor | [53]=R/W, [52:36]=addr, [35:0]=data | Host neuron access commands |
+reg [2:0] phase2_state;
+localparam P2_IDLE = 0;
+localparam P2_READ_SYN = 1;
+localparam P2_WAIT_SYN = 2;
+localparam P2_PARSE_SYN = 3;
+localparam P2_FORWARD = 4;
 
-#### Internal Data Pipes
+reg [31:0] current_pointer;
+reg [22:0] syn_base_addr;
+reg [8:0] syn_length;
+reg [255:0] synapse_data;
 
-| FIFO Name | Width | Depth | Source | Consumer | Format | Purpose |
-|-----------|-------|-------|--------|----------|--------|---------|
-| **ptrFIFO[0-15]** | 32 bits | 512 each | HBM Processor RX | HBM Processor TX | [31:23]=length, [22:0]=address | 16 parallel pointer queues (one per neuron group) |
-| **hbmFIFO** | 512 bits | Variable | HBM Processor RX | Internal Events Processor | 16 groups × 32 bits | Synaptic inputs to neurons |
+always @(posedge aclk) begin
+    case (phase2_state)
+        P2_IDLE: begin
+            if (pfc2hbm_valid) begin
+                current_pointer <= pfc2hbm_ptr;
 
-**Pointer FIFO Details:**
-- 16 independent FIFOs, one per neuron group (URAM bank)
-- Populated during Phase 1 by pointer_fifo_controller demuxing
-- Consumed during Phase 2 by HBM TX using round-robin selection
-- Pointer format: `{synapse_count[8:0], hbm_base_address[22:0]}`
+                // Extract pointer fields
+                syn_length <= current_pointer[31:23];
+                syn_base_addr <= current_pointer[22:0];
 
-#### Output Path (FPGA → Host)
+                phase2_state <= P2_READ_SYN;
+            end
+        end
 
-| FIFO Name | Width | Depth | Source | Consumer | Format | Purpose |
-|-----------|-------|-------|--------|----------|--------|---------|
-| **spk0-7** | 17 bits | 512 each | HBM Processor RX spike logic | Spike FIFO Controller | Neuron address (17 bits) | 8 parallel spike distribution FIFOs |
-| **spk2ciFIFO** | 17 bits | Variable | Spike FIFO Controller | Command Interpreter TX | Neuron address | Aggregated spike queue |
-| **txFIFO** | 512 bits | 512 | Command Interpreter TX | pcie2fifos (Host PC) | [511:480]=opcode, [479:0]=payload | Outgoing response queue |
-| **hbm2ci** | 256 bits | Variable | HBM Processor RX | Command Interpreter TX | HBM read data | Host HBM read responses |
-| **iep2ci** | 53 bits | Variable | Internal Events Processor | Command Interpreter TX | [52:36]=addr, [35:0]=data | Host neuron read responses |
+        P2_READ_SYN: begin
+            // Read synapse row from HBM Region 3
+            // Address = SYN_BASE + syn_base_addr
+            hbm_arvalid <= 1'b1;
+            hbm_araddr <= {5'd0, SYN_BASE[22:0] + syn_base_addr, 5'd0};
+            hbm_arlen <= 8'd0;  // 1 beat
+            hbm_arsize <= 3'd5; // 32 bytes = 256 bits
 
-**Spike FIFO Routing:**
-```
-HBM RX extracts 8 synapses from 256-bit word
-    │
-    ├─> Synapse 0 (addr[2:0]=0) → spk0
-    ├─> Synapse 1 (addr[2:0]=1) → spk1
-    ├─> Synapse 2 (addr[2:0]=2) → spk2
-    ├─> Synapse 3 (addr[2:0]=3) → spk3
-    ├─> Synapse 4 (addr[2:0]=4) → spk4
-    ├─> Synapse 5 (addr[2:0]=5) → spk5
-    ├─> Synapse 6 (addr[2:0]=6) → spk6
-    └─> Synapse 7 (addr[2:0]=7) → spk7
-            │
-            ▼
-    Spike FIFO Controller (round-robin arbitration)
-            │
-            ▼
-        spk2ciFIFO (aggregated)
-            │
-            ▼
-    Command Interpreter TX (batch into 14-spike packets)
-            │
-            ▼
-        txFIFO → Host PC
-```
+            phase2_state <= P2_WAIT_SYN;
+        end
 
----
+        P2_WAIT_SYN: begin
+            if (hbm_rvalid) begin
+                synapse_data <= hbm_rdata[255:0];
+                phase2_state <= P2_PARSE_SYN;
+            end
+        end
 
-### Complete Timing Sequence
+        P2_PARSE_SYN: begin
+            // Parse 8 × 32-bit synapses from 256-bit data
+            for (i = 0; i < 8; i = i + 1) begin
+                syn[i] = synapse_data[(i*32)+:32];
+                opcode[i] = syn[i][31:29];
+                target[i] = syn[i][28:16];  // 13-bit address
+                weight[i] = syn[i][15:0];   // 16-bit weight
 
-Cycle-by-cycle breakdown of a complete timestep execution:
+                // Check synapse type
+                if (syn[i][31]) begin
+                    // OpCode bit 31 = 1: This is a spike (send to spike FIFO)
+                    spkFIFO_wr_en[i % 8] <= 1'b1;
+                    spkFIFO_din[i % 8] <= {4'b0, target[i]};
+                end
+            end
 
-#### Setup and Phase 1 Initiation (Cycles 0-3)
+            phase2_state <= P2_FORWARD;
+        end
 
-```
-CYCLE 0: HOST PC → exec_run command received
-    │
-    ├─> Command Interpreter RX:
-    │   • Parses CMD_EXEC_STEP or starts timestep loop in CMD_EXEC_CONT
-    │   • exec_run_rst = 1 (reset counters)
-    │   • execRun_ctr = 0
-    │   • execRun_timer = 0
-    │   • execRun_running = 1 (next cycle)
-    │
-    ├─> External Events Processor:
-    │   • bram_select toggles (swap present/future buffers)
-    │   • bramPresent_addr_rst = 1
-    │   • bramPresent_raddr = 0
-    │   • State → FILL_PIPE
-    │
-    ├─> Internal Events Processor:
-    │   • uram_raddr_rst = 1
-    │   • uram_raddr = 0
-    │   • State → FILL_PIPE_PHASE1
-    │
-    └─> HBM Processor:
-        • TX: tx_done_rst = 1, tx_addr_rst = 1
-              State → SEND_INPUT_READ_COMMANDS
-        • RX: rx_done_rst = 1, rx_addr_rst = 1
-              State → WAIT_BRAM_PIPELINE
+        P2_FORWARD: begin
+            // Forward synapse data to internal_events_processor
+            exec_hbm_rdata <= {256'b0, synapse_data};
+            exec_hbm_valid <= 1'b1;
 
-CYCLE 1: Pipeline Filling Begins
-    │
-    ├─> EEP: FILL_PIPE state
-    │   • bramPresent_rden = 1
-    │   • bramPresent_raddr = 0 (reading address 0)
-    │   • BRAM latency = 3 cycles (data arrives cycle 4)
-    │
-    ├─> IEP: FILL_PIPE_PHASE1 state
-    │   • uram_rden_0-15 = 1 (all groups in parallel)
-    │   • uram_raddr = 0
-    │   • URAM latency = 3 cycles
-    │
-    └─> HBM TX: SEND_INPUT_READ_COMMANDS
-        • hbm_arvalid = 1 (send first read request)
-        • hbm_araddr = {5'd0, 8'd0, 1'b0, 10'd0, 4'd0, 5'd0}
-        • hbm_arlen = 15 (request 16 words)
-        • tx_addr = 0
-
-CYCLE 2: Pipeline Filling (2nd address)
-    │
-    ├─> EEP: bramPresent_raddr = 1
-    ├─> IEP: uram_raddr = 1
-    └─> HBM TX:
-        • If hbm_arready = 1: tx_addr_inc, tx_addr = 1
-        • Send next read command
-
-CYCLE 3: Pipeline Filling (3rd address)
-    │
-    ├─> EEP: bramPresent_raddr = 2
-    ├─> IEP: uram_raddr = 2
-    └─> HBM TX: tx_addr = 2
+            // Back to check for more pointers
+            phase2_state <= P2_IDLE;
+        end
+    endcase
+end
 ```
 
-#### Phase 1a: Input Pointer Collection (Cycles 4-200)
-
+**Example for axon 0's synapses:**
 ```
-CYCLE 4: Pipelines Ready, Synchronized Streaming Begins
-    │
-    ├─> EEP:
-    │   • Data from BRAM address 0 now valid (after 3-cycle latency)
-    │   • bramPresent_raddr >= PIPE_DEPTH (3)
-    │   • exec_bram_phase1_ready = 1 ✓ (SIGNAL TO HBM)
-    │   • State → READ_INPUTS
-    │   • bramPresent_rden = 1 (when exec_hbm_rvalidready = 1)
-    │   • exec_bram_spiked = bramPresent_rdata (8-bit spike mask)
-    │   • bramPresent_wren = 1 (clear BRAM address 0 to zero)
-    │
-    ├─> HBM RX:
-    │   • Sees exec_bram_phase1_ready = 1
-    │   • State → READ_INPUT_POINTERS
-    │   • hbm_rready = 1 (ready to accept pointer data)
-    │
-    └─> HBM TX:
-        • Continues sending read commands
-        • tx_addr increments each cycle (when hbm_arready = 1)
-        • Loop: tx_addr = 0 → INPUT_ADDR_LIMIT
+Input: pointer = 32'h0080_8000
+       syn_length = 9'd1
+       syn_base_addr = 23'h8000
 
-CYCLES 5-100+: HBM Data Arrives (High Latency)
-    │
-    ├─> HBM Memory:
-    │   • First pointer data arrives after ~100 cycles
-    │   • Each HBM read returns 256-bit word
-    │   • Each 256-bit word contains 8 pointers
-    │   • Burst of 16 words arrives consecutively
-    │
-    └─> HBM RX:
-        • hbm_rvalid = 1 (data valid)
-        • hbm_rready = 1 (accept data)
-        • rx_addr_inc = 1
-        • Forward pointer word to pointer_fifo_controller
+Read HBM[0x8000]:
+  synapse_data = 256-bit containing:
+    syn[0] = {3'b000, 13'd0, 16'd1000}  (target=h0, weight=1000)
+    syn[1] = {3'b000, 13'd1, 16'd1000}  (target=h1, weight=1000)
+    syn[2] = {3'b000, 13'd2, 16'd1000}  (target=h2, weight=1000)
+    syn[3] = {3'b000, 13'd3, 16'd1000}  (target=h3, weight=1000)
+    syn[4] = {3'b000, 13'd4, 16'd1000}  (target=h4, weight=1000)
+    syn[5-7] = 32'h0 (unused)
 
-        Pointer Format (32 bits per pointer):
-        • [31:23] = length (number of synapse rows, 0-511)
-        • [22:0]  = base_address (HBM location, 0-8M)
-
-CYCLES 100-200: Parallel Streaming
-    │
-    ├─> EEP:
-    │   • bramPresent_rden = 1 (synchronized with exec_hbm_rvalidready)
-    │   • Incrementing bramPresent_raddr and bramPresent_waddr
-    │   • exec_bram_spiked continuously updated
-    │   • When bramPresent_waddr == BRAM_ADDR_LIMIT:
-    │     exec_bram_phase1_done = 1 ✓
-    │
-    ├─> HBM RX:
-    │   • Receiving pointer data bursts from HBM
-    │   • Forwarding to pointer_fifo_controller
-    │
-    └─> Pointer FIFO Controller:
-        • Demuxes pointers to 16 ptrFIFOs based on exec_bram_spiked
-        • Example: exec_bram_spiked = 0b00000111
-          → Groups 0, 1, 2 have spikes
-          → Distribute pointers accordingly
-        • ptrFIFO[0-15] fill up with addresses
-```
-
-#### Phase 1b: Output Pointer Collection (Cycles 200-500)
-
-```
-CYCLE ~200: Transition to Output Pointers
-    │
-    ├─> EEP:
-    │   • exec_bram_phase1_done = 1 (latched)
-    │   • State → PHASE1_DONE → IDLE
-    │
-    ├─> IEP:
-    │   • Sees exec_bram_phase1_done = 1
-    │   • State → PUSH_PTR_FIFO
-    │   • exec_uram_phase1_ready = 1 ✓
-    │   • Continues reading URAM (uram_raddr incrementing)
-    │   • Outputs neuron pointers for internal connections
-    │
-    ├─> HBM RX:
-    │   • Finishes receiving input pointers
-    │   • rx_addr == {INPUT_ADDR_LIMIT, INPUT_ADDR_MOD}
-    │   • State → WAIT_URAM_PIPELINE
-    │   • Waits for exec_uram_phase1_ready = 1
-    │
-    └─> HBM TX:
-        • tx_addr == INPUT_ADDR_LIMIT
-        • tx_select_inc = 1 (toggle to outputs)
-        • tx_addr_rst = 1
-        • State → SEND_OUTPUT_READ_COMMANDS
-
-CYCLES 201-500: Output Pointer Streaming
-    │
-    ├─> IEP:
-    │   • uram_rden_0-15 = 1 (all 16 groups in parallel)
-    │   • Reads neuron potentials from URAM
-    │   • For each neuron: check if has outgoing connections
-    │   • Output pointers to HBM processor
-    │   • When uram_raddr == URAM_ADDR_LIMIT:
-    │     exec_uram_phase1_done = 1 ✓
-    │
-    ├─> HBM RX:
-    │   • Sees exec_uram_phase1_ready = 1
-    │   • State → READ_OUTPUT_POINTERS
-    │   • Receives output pointer data from HBM
-    │   • Forwards to pointer_fifo_controller
-    │   • When rx_addr == {OUTPUT_ADDR_LIMIT, OUTPUT_ADDR_MOD}:
-    │     State → PHASE1_DONE
-    │     rx_phase1_done = 1 ✓
-    │
-    ├─> HBM TX:
-    │   • Sends output pointer read commands
-    │   • tx_addr loops: 0 → OUTPUT_ADDR_LIMIT
-    │   • When complete:
-    │     State → PHASE1_DONE
-    │     tx_phase1_done = 1 ✓
-    │     tx_phase_inc = 1 (toggle tx_phase: 0 → 1)
-    │     State → POP_POINTER_FIFO
-    │
-    └─> Pointer FIFO Controller:
-        • Continues demuxing output pointers to ptrFIFOs
-        • ptrFIFO[0-15] now contain both input and output pointers
-```
-
-**Phase 1 Complete:**
-- EEP: exec_bram_phase1_done = 1
-- IEP: exec_uram_phase1_done = 1
-- HBM TX: tx_phase1_done = 1, tx_phase = 1 (Phase 2 mode)
-- HBM RX: rx_phase1_done = 1
-- All 16 ptrFIFOs filled with connectivity pointers
-
----
-
-#### Phase 2: Synapse Data Fetching and Processing (Cycles 500-1500)
-
-```
-CYCLE ~500: Phase 2 Initiation
-    │
-    ├─> HBM TX:
-    │   • State = POP_POINTER_FIFO
-    │   • Checks: rx_phase1_done = 1 ✓
-    │   • Checks: ptrFIFO not empty (at least one group has pointers)
-    │   • ptrFIFO_rden = 1 (pop first pointer)
-    │   • ptr_addr_set = 1 (load pointer)
-    │   • ptr_addr = ptrFIFO_dout[22:0]
-    │   • ptr_len = ptrFIFO_dout[31:23]
-    │   • ptr_ctr = 0
-    │   • State → SEND_POINTER_READ_COMMANDS
-    │
-    ├─> HBM RX:
-    │   • State = READ_SYNAPSE_DATA
-    │   • hbm_rready = 1 (always accept synapse data)
-    │   • rx_ptr_ctr = 0
-    │
-    └─> IEP:
-        • State = Phase 2 processing
-        • Ready to receive synaptic inputs
-
-CYCLES 501-1500: Pointer-Driven Synapse Fetch Loop
-    │
-    └─> For each pointer in ptrFIFOs:
-
-        HBM TX:
-        • Calculate burst length:
-          ptr_burst = (ptr_ctr[8:4] == ptr_len[8:4]) ? ptr_len[3:0] : 4'hf
-        • Send HBM read command:
-          hbm_arvalid = 1
-          hbm_araddr = {5'd0, ptr_addr[22:0], 5'd0}
-          hbm_arlen = ptr_burst
-        • When hbm_arready = 1:
-          ptr_addr_inc = 1
-          ptr_addr += (ptr_burst + 1)
-          ptr_ctr += (ptr_burst + 1)
-          tx_ptr_ctr += (ptr_burst + 1)
-
-        • If ptr_ctr[8:4] == ptr_len[8:4]:
-          Current pointer exhausted
-          State → POP_POINTER_FIFO (get next)
-
-        • Else:
-          Continue fetching remaining bursts for current pointer
-
-        HBM RX (Parallel):
-        • Receives 256-bit synapse words from HBM
-        • Assembles into 512-bit packets:
-          Cycle N:   hbm_count = 0, store in hbm_rdata_lower
-          Cycle N+1: hbm_count = 1, combine with current hbm_rdata
-                     exec_hbm_rdata = {hbm_rdata, hbm_rdata_lower}
-                     exec_hbm_rvalidready = 1 ✓
-
-        • Extract spike flags and route to spike FIFOs:
-          For synapse 0-7:
-            spike_flag = hbm_rdata[N*32 + 31]
-            If spike_flag = 1:
-              neuron_addr = hbm_rdata[N*32 + 16:N*32]
-              Route to spkN based on neuron_addr[2:0]
-              spkN_wren = 1, spkN_din = neuron_addr
-
-        • rx_ptr_ctr++ (count 256-bit words)
-
-        IEP (Parallel):
-        • When exec_hbm_rvalidready = 1:
-
-          Extract 16 group inputs:
-          For group 0-15:
-            input_upper = exec_hbm_rdata[group*32 + 31:group*32 + 16]
-            input_lower = exec_hbm_rdata[group*32 + 15:group*32 + 0]
-
-          Read current neuron potential from URAM:
-            old_potential = uram_rdata[group]
-
-          Accumulate synaptic input:
-            new_V_upper = old_potential[71:36] + sign_extend(input_upper)
-            new_V_lower = old_potential[35:0]  + sign_extend(input_lower)
-
-          Apply neuron model (leak, reset, etc.):
-            (depends on exec_neuron_model setting)
-
-          Check threshold:
-            if (new_V_upper > threshold):
-              exec_uram_spiked[group] = 1
-              new_V_upper = reset_value (depending on model)
-            if (new_V_lower > threshold):
-              exec_uram_spiked[group] = 1
-              new_V_lower = reset_value
-
-          Write updated potential back to URAM:
-            uram_waddr[group] = current_word_address
-            uram_wdata_reg[group] = {new_V_upper, new_V_lower}
-            uram_wren[group] = 1
-
-        Spike FIFO Controller (Parallel):
-        • Round-robin reads from spk0-7
-        • Aggregates to spk2ciFIFO
-
-        Command Interpreter TX (Parallel):
-        • Batches spikes from spk2ciFIFO
-        • When spike_ctr == 14:
-          Send 512-bit packet:
-          [511:480] = 0xEEEEEEEE
-          [479:32]  = 14 × 32-bit spikes
-          [31:0]    = execRun_ctr
-          txFIFO_wren = 1
-          spike_rst = 1
-
-CYCLE ~1500: Phase 2 Completion
-    │
-    ├─> HBM TX:
-    │   • All ptrFIFOs empty (or safety timer expired)
-    │   • wait_clks_cnt == 255 AND ptrFIFO_empty
-    │   • State → PHASE2_DONE
-    │   • tx_phase2_done = 1 ✓
-    │   • tx_ptr_ctr = final count (e.g., 5000 synapse blocks)
-    │
-    ├─> HBM RX:
-    │   • Checks: tx_phase2_done = 1 ✓
-    │   • Checks: rx_ptr_ctr == tx_ptr_ctr ✓
-    │   • State → PHASE2_DONE
-    │   • rx_phase2_done = 1 ✓
-    │
-    └─> IEP:
-        • Sees exec_hbm_rx_phase2_done = 1
-        • All neuron updates complete
-        • exec_uram_phase2_done = 1 ✓
-        • exec_iep_phase2_done = 1 ✓
+Forward to internal_events_processor:
+  exec_hbm_rdata[255:0] = synapse_data
+  exec_hbm_valid = 1
 ```
 
 ---
 
-#### Timestep Finalization (Cycles 1500-1535)
+#### Verilog: internal_events_processor Phase 2 - Neuron Updates
 
-```
-CYCLE 1501: Command Interpreter Checks Completion
-    │
-    └─> CI RX (State = WAIT_RUN):
-        • Checks: exec_iep_phase2_done = 1 ✓
-        • Checks: spk2ciFIFO_empty = 1 (all spikes drained)
-        • wait_clks_cnt starts incrementing
+File: `hardware_code/gopa/CRI_proj/internal_events_processor.v` (lines 800-1000)
 
-CYCLES 1502-1531: Safety Margin
-    │
-    └─> CI RX:
-        • wait_clks_cnt increments each cycle
-        • Ensures all spikes propagated through arbiters
-        • Ensures FIFOs fully drained
+```verilog
+// Phase 2: Process synapses from exec_hbm_rdata, update neurons
+// Runs @ 450 MHz (aclk450) for higher throughput
 
-CYCLE 1532: Timestep Complete (wait_clks_cnt == 31)
-    │
-    └─> CI RX:
-        • exec_run_inc = 1
-        • execRun_ctr++ (e.g., 0 → 1)
-        • execRun_timer continues counting
+reg [2:0] state;
+localparam IEP_IDLE = 0;
+localparam IEP_PARSE_SYN = 1;
+localparam IEP_READ_URAM = 2;
+localparam IEP_ACCUMULATE = 3;
+localparam IEP_APPLY_MODEL = 4;
+localparam IEP_WRITE_URAM = 5;
+localparam IEP_CHECK_SPIKE = 6;
 
-        Check continuation:
-        • If execRun_ctr < execRun_limit:
-          axon_addr_rst = 1
-          State → REGISTER_PCIE_AXON_DATA
-          Load next timestep's input data
-          Loop back to CYCLE 0 (exec_run pulse)
+reg [3:0] syn_index;  // Which synapse in packet (0-7 or 0-15)
+reg [31:0] current_syn;
+reg [16:0] target_neuron;
+reg [15:0] weight;
+reg [35:0] V_old, V_new, V_final;
+reg spike;
 
-        • Else (execRun_ctr == execRun_limit):
-          State → EXEC_DONE
-          exec_run_done = 1
-          execRun_running = 0 (stop timer)
-          All timesteps complete!
-```
+// Neuron model parameters (programmed during init)
+reg [35:0] threshold = 36'd2000;
+reg [5:0] leak = 6'd63;  // No leak for IF neurons
+reg [1:0] neuron_model = 2'b00;  // 00=IF, 10=LIF
 
-**Typical Timing Summary:**
-- Phase 1 (Pointer Collection): ~200-500 cycles
-- Phase 2 (Synapse Processing): ~300-1000 cycles
-- Safety Margin: 31 cycles
-- **Total per Timestep: ~500-1500 cycles**
-- At 225 MHz: **2.2-6.7 microseconds per timestep**
+// Pipeline hazard tracking (addresses currently in flight)
+reg [16:0] pipeline_addr [0:4];
 
----
+always @(posedge aclk450) begin
+    case (state)
+        IEP_IDLE: begin
+            if (exec_hbm_valid) begin
+                syn_data_reg <= exec_hbm_rdata[255:0];
+                syn_index <= 4'd0;
+                state <= IEP_PARSE_SYN;
+            end
+        end
 
-### Handshake Protocols
+        IEP_PARSE_SYN: begin
+            // Extract synapse from data
+            current_syn = syn_data_reg[(syn_index*32)+:32];
 
-Detailed sequence diagrams for each inter-module handshake:
+            if (current_syn == 32'h0) begin
+                // Unused synapse slot, skip
+                syn_index <= syn_index + 1;
+                if (syn_index == 4'd7)
+                    state <= IEP_IDLE;  // Done with this packet
+            end else begin
+                // Valid synapse
+                target_neuron = current_syn[28:16];  // 13-bit address
+                weight = current_syn[15:0];
 
-#### 1. EEP ↔ HBM: Input Spike Coordination
+                state <= IEP_READ_URAM;
+            end
+        end
 
-**Problem:** HBM needs to know when EEP is ready to stream spike data.
+        IEP_READ_URAM: begin
+            // Check for read-after-write hazard
+            hazard = (target_neuron == pipeline_addr[1]) ||
+                     (target_neuron == pipeline_addr[2]) ||
+                     (target_neuron == pipeline_addr[3]);
 
-**Solution:** 3-stage handshake
+            if (hazard) begin
+                // Stall: same neuron still in pipeline
+                state <= IEP_READ_URAM;
+            end else begin
+                // Safe to read
+                // URAM stores 2 neurons per 72-bit word
+                uram_addr <= target_neuron[16:1];  // Word address
+                uram_rd_en <= 1'b1;
 
-```
-Step 1: Pipeline Initialization
-    EEP: Receives exec_run pulse
-    EEP: Toggles bram_select (swap buffers)
-    EEP: Enters FILL_PIPE state
-    EEP: Issues 3 consecutive BRAM reads
+                pipeline_addr[0] <= target_neuron;
+                state <= IEP_ACCUMULATE;
+            end
+        end
 
-Step 2: Pipeline Ready Signal
-    EEP: After 3 cycles (bramPresent_raddr >= 3)
-    EEP: exec_bram_phase1_ready = 1 ✓
-    HBM RX: Waiting in WAIT_BRAM_PIPELINE
-    HBM RX: Sees exec_bram_phase1_ready = 1
-    HBM RX: State → READ_INPUT_POINTERS
+        IEP_ACCUMULATE: begin
+            // URAM read latency: 1 cycle @ 450 MHz
+            uram_word <= uram_dout[71:0];
 
-Step 3: Synchronized Streaming
-    EEP: bramPresent_rden = 1 ONLY when exec_hbm_rvalidready = 1
-    EEP: Reads next BRAM address
-    EEP: Outputs exec_bram_spiked
-    HBM: Receives pointer data from HBM memory
-    HBM: Forwards to pointer_fifo_controller
-    HBM: Sets exec_hbm_rvalidready = 1 on every 2nd 256-bit word
+            // Select upper or lower neuron in word
+            if (target_neuron[0] == 1'b0)
+                V_old = uram_word[35:0];    // Lower neuron
+            else
+                V_old = uram_word[71:36];   // Upper neuron
 
-    Loop: Synchronized 1:1 until BRAM exhausted
+            // Check for bypass (recent write to same neuron)
+            if (target_neuron == pipeline_addr[1])
+                V_old = bypass_data[1];
+            else if (target_neuron == pipeline_addr[2])
+                V_old = bypass_data[2];
+            else if (target_neuron == pipeline_addr[3])
+                V_old = bypass_data[3];
 
-Step 4: Completion
-    EEP: When bramPresent_waddr == BRAM_ADDR_LIMIT
-    EEP: exec_bram_phase1_done = 1 ✓
-    IEP: Waiting for this signal before proceeding
-```
+            // Accumulate synaptic input
+            V_new = V_old + $signed(weight);
 
-**Key Signal Timing:**
-```
-         exec_run
-             │
-CYCLE 0      ▼
-             ├─ bram_select toggles
-             │
-CYCLE 1-3    ├─ FILL_PIPE (reading addresses 0, 1, 2)
-             │
-CYCLE 4      ├─ exec_bram_phase1_ready = 1
-             │  └─> HBM RX sees signal, enters READ_INPUT_POINTERS
-             │
-CYCLE 5-200  ├─ Synchronized streaming:
-             │  • bramPresent_rden = exec_hbm_rvalidready
-             │  • exec_bram_spiked updated each valid cycle
-             │
-CYCLE 200    └─ exec_bram_phase1_done = 1
-```
+            pipeline_addr[1] <= pipeline_addr[0];
+            bypass_data[1] <= V_new;
+            state <= IEP_APPLY_MODEL;
+        end
 
----
+        IEP_APPLY_MODEL: begin
+            // Apply neuron model (leak, etc.)
+            if (neuron_model == 2'b10) begin  // LIF
+                V_new = V_new - (V_new >>> leak);
+            end
+            // IF model: no leak
 
-#### 2. IEP ↔ HBM: Output Neuron Coordination
+            // Threshold check
+            spike = (V_new >= $signed(threshold));
 
-**Problem:** HBM must wait for IEP URAM pipeline to fill AND for EEP to finish before reading output pointers.
+            // Reset if spike
+            if (spike)
+                V_final = 36'sd0;
+            else
+                V_final = V_new;
 
-**Solution:** 4-stage handshake
+            pipeline_addr[2] <= pipeline_addr[1];
+            bypass_data[2] <= V_final;
+            state <= IEP_WRITE_URAM;
+        end
 
-```
-Step 1: Wait for External Events Complete
-    IEP: State = WAIT_BRAM_PHASE1_DONE
-    IEP: Waits for exec_bram_phase1_done = 1
-    IEP: Cannot proceed until external spikes processed
+        IEP_WRITE_URAM: begin
+            // Reconstruct 72-bit word with updated neuron
+            if (target_neuron[0] == 1'b0)
+                uram_din = {uram_word[71:36], V_final};  // Update lower
+            else
+                uram_din = {V_final, uram_word[35:0]};   // Update upper
 
-Step 2: URAM Pipeline Filling
-    IEP: After exec_bram_phase1_done received
-    IEP: State → PUSH_PTR_FIFO
-    IEP: uram_rden_0-15 = 1 (all groups reading in parallel)
-    IEP: Reads neuron potentials, outputs pointers
+            // Write back to URAM
+            uram_we <= 1'b1;
+            uram_addr <= target_neuron[16:1];
 
-Step 3: URAM Ready Signal
-    IEP: After uram_raddr >= PIPE_DEPTH (3)
-    IEP: exec_uram_phase1_ready = 1 ✓
-    HBM RX: Waiting in WAIT_URAM_PIPELINE
-    HBM RX: Sees exec_uram_phase1_ready = 1
-    HBM RX: State → READ_OUTPUT_POINTERS
+            pipeline_addr[3] <= pipeline_addr[2];
+            bypass_data[3] <= V_final;
+            state <= IEP_CHECK_SPIKE;
+        end
 
-Step 4: Pointer Streaming
-    IEP: Continues reading URAM (uram_raddr incrementing)
-    IEP: Outputs neuron pointers
-    HBM: Receives pointer data from HBM memory
-    HBM: Forwards to pointer_fifo_controller
+        IEP_CHECK_SPIKE: begin
+            if (spike) begin
+                // Record spike for Phase 1b
+                neuron_group = target_neuron[16:13];
+                uram_spiked_mask[neuron_group] <= 1'b1;
 
-    Loop: Until uram_raddr == URAM_ADDR_LIMIT
+                // Send to spike_fifo_controller
+                spike_out_valid <= 1'b1;
+                spike_out_addr <= target_neuron;
+            end
 
-Step 5: Completion
-    IEP: exec_uram_phase1_done = 1 ✓
-    HBM RX: When rx_addr == {OUTPUT_ADDR_LIMIT, OUTPUT_ADDR_MOD}
-    HBM RX: rx_phase1_done = 1 ✓
-```
-
-**Dependency Chain:**
-```
-exec_run
-   │
-   ├─> EEP starts (immediate)
-   │   └─> exec_bram_phase1_done = 1
-   │       └─> IEP can proceed
-   │           └─> exec_uram_phase1_ready = 1
-   │               └─> HBM RX can read output pointers
-   │                   └─> rx_phase1_done = 1
-   │                       └─> HBM TX can start Phase 2
-   │
-   └─> HBM TX starts sending input pointer commands (immediate)
-```
-
----
-
-#### 3. HBM TX ↔ RX: Phase Coordination
-
-**Problem:** RX must know when TX finishes Phase 1 to enable Phase 2. TX must know when RX finishes Phase 1 to start popping ptrFIFO.
-
-**Solution:** Cross-phase completion flags
-
-```
-Phase 1:
-    TX: Sends input pointer read commands
-    TX: When tx_addr == INPUT_ADDR_LIMIT:
-        tx_select_inc = 1, State → SEND_OUTPUT_READ_COMMANDS
-    TX: Sends output pointer read commands
-    TX: When tx_addr == OUTPUT_ADDR_LIMIT:
-        State → PHASE1_DONE
-        tx_phase1_done = 1 ✓
-        tx_phase_inc = 1 (toggle tx_phase: 0 → 1)
-        State → POP_POINTER_FIFO
-
-    RX: Receives input pointer data
-    RX: When rx_addr == {INPUT_ADDR_LIMIT, INPUT_ADDR_MOD}:
-        State → WAIT_URAM_PIPELINE
-    RX: Waits for exec_uram_phase1_ready = 1
-    RX: Receives output pointer data
-    RX: When rx_addr == {OUTPUT_ADDR_LIMIT, OUTPUT_ADDR_MOD}:
-        State → PHASE1_DONE
-        rx_phase1_done = 1 ✓
-
-Phase 1 → Phase 2 Transition:
-    TX: State = POP_POINTER_FIFO
-    TX: Checks: rx_phase1_done = 1 (RX finished receiving pointers)
-    TX: Checks: ptrFIFO not empty (has pointers to fetch)
-    TX: If both conditions met:
-        ptrFIFO_rden = 1, ptr_addr_set = 1
-        State → SEND_POINTER_READ_COMMANDS
-
-    RX: State = READ_SYNAPSE_DATA
-    RX: hbm_rready = 1 (always accept synapse data)
-
-Phase 2:
-    TX: Loops through all ptrFIFO pointers
-    TX: Sends synapse read commands
-    TX: tx_ptr_ctr increments with each burst
-    TX: When all ptrFIFOs empty (or timer expires):
-        State → PHASE2_DONE
-        tx_phase2_done = 1 ✓
-
-    RX: Receives synapse data
-    RX: rx_ptr_ctr increments with each 256-bit word
-    RX: When tx_phase2_done = 1 AND rx_ptr_ctr == tx_ptr_ctr:
-        State → PHASE2_DONE
-        rx_phase2_done = 1 ✓
-
-Phase 2 Complete:
-    Both TX and RX return to IDLE
-    Ready for next exec_run pulse
+            // Move to next synapse in packet
+            syn_index <= syn_index + 1;
+            if (syn_index == 4'd7)
+                state <= IEP_IDLE;  // Done with packet
+            else
+                state <= IEP_PARSE_SYN;  // Next synapse
+        end
+    endcase
+end
 ```
 
-**Counter Synchronization:**
-```
-TX maintains: tx_ptr_ctr (total 256-bit words requested)
-RX maintains: rx_ptr_ctr (total 256-bit words received)
-
-Completion condition: (tx_phase2_done = 1) AND (rx_ptr_ctr == tx_ptr_ctr)
-
-This ensures ALL synapse data has been received before proceeding.
-```
-
----
-
-#### 4. HBM ↔ IEP: Synaptic Data Streaming
-
-**Problem:** IEP needs continuous stream of synaptic inputs, synchronized with HBM data arrival.
-
-**Solution:** Data-valid handshake with automatic flow control
+**Example trace for neuron h0 receiving 3 inputs:**
 
 ```
-HBM RX Phase 2:
-    • State = READ_SYNAPSE_DATA
-    • hbm_rready = 1 (always ready to accept from HBM)
-    • When hbm_rvalid = 1 (HBM data arrives):
+═══════════════════════════════════════════
+Input 1: From axon a0, weight=1000
+═══════════════════════════════════════════
 
-        Packet Assembly:
-        Cycle N:   hbm_count = 0
-                   hbm_rdata_lower = hbm_rdata (256 bits)
-        Cycle N+1: hbm_count = 1
-                   exec_hbm_rdata = {hbm_rdata, hbm_rdata_lower} (512 bits)
-                   exec_hbm_rvalidready = 1 ✓
+Cycle 0: IEP_IDLE
+  exec_hbm_rdata contains a0's synapses
 
-        • Check backpressure: !hbmFIFO_full
-        • If full: wait (stall pipeline)
+Cycle 1: IEP_PARSE_SYN
+  syn_index = 0
+  current_syn = {3'b000, 13'd0, 16'd1000}
+  target_neuron = 17'd0 (h0)
+  weight = 16'd1000
 
-IEP Phase 2:
-    • Continuously monitors exec_hbm_rvalidready
-    • When exec_hbm_rvalidready = 1:
+Cycle 2: IEP_READ_URAM
+  uram_addr = 0 >> 1 = 0
+  No hazard (pipeline empty)
 
-        hbm2iep_rden = 1 (consume packet)
+Cycle 3: IEP_ACCUMULATE
+  uram_word = {neuron_1_data, neuron_0_data}
+  V_old = uram_word[35:0] = 36'd0 (zero)
+  V_new = 0 + 1000 = 1000
 
-        Extract 16 group inputs:
-        • exec_hbm_rdata[31:0]    → group 0 (upper/lower)
-        • exec_hbm_rdata[63:32]   → group 1
-        • ...
-        • exec_hbm_rdata[511:480] → group 15
+Cycle 4: IEP_APPLY_MODEL
+  neuron_model = IF, no leak
+  spike = (1000 >= 2000) = 0
+  V_final = 1000
 
-        For each group:
-        • Read URAM (current neuron potential)
-        • Add synaptic input
-        • Apply neuron model
-        • Check threshold → spike?
-        • Write updated potential back to URAM
+Cycle 5: IEP_WRITE_URAM
+  uram_din = {upper_data, 36'd1000}
+  uram_we = 1
 
-        • If spike: exec_uram_spiked[group] = 1
+Cycle 6: IEP_CHECK_SPIKE
+  spike = 0, no output
+  Continue to next synapse...
 
-Completion:
-    HBM RX: exec_hbm_rx_phase2_done = 1
-    IEP: Sees signal, sets exec_iep_phase2_done = 1
-```
+═══════════════════════════════════════════
+Input 2: From axon a1, weight=1000
+═══════════════════════════════════════════
 
-**Timing Diagram:**
-```
-HBM Memory             HBM RX                 IEP
-    │                     │                    │
-    ├─ 256-bit word ────> ├─ Store lower      │
-    │   (hbm_rvalid=1)    │   hbm_count=0     │
-    │                     │                    │
-    ├─ 256-bit word ────> ├─ Combine          │
-    │   (hbm_rvalid=1)    │   hbm_count=1     │
-    │                     │   exec_hbm_rdata  │
-    │                     │   rvalidready=1 ──>├─ Process 16 groups
-    │                     │                    │   Read URAM
-    │                     │                    │   Update neurons
-    │                     │                    │   Write URAM
-    │                     │                    │   hbm2iep_rden=1
-    │                     │                    │
-    ├─ 256-bit word ────> ├─ Store lower      │
-    │                     │   hbm_count=0     │
-    │                     │                    │
-    └─ Continuous...      └─ Continuous...    └─ Continuous...
+Cycle 100: IEP_PARSE_SYN
+  target_neuron = 17'd0 (h0 again!)
+  weight = 16'd1000
+
+Cycle 101: IEP_READ_URAM
+  uram_addr = 0
+
+Cycle 102: IEP_ACCUMULATE
+  uram_word[35:0] = 36'd1000 (from previous!)
+  V_old = 1000
+  V_new = 1000 + 1000 = 2000
+
+Cycle 103: IEP_APPLY_MODEL
+  spike = (2000 >= 2000) = 1  ← SPIKE!
+  V_final = 0 (reset)
+
+Cycle 104: IEP_WRITE_URAM
+  uram_din = {upper_data, 36'd0}
+  uram_we = 1
+
+Cycle 105: IEP_CHECK_SPIKE
+  spike = 1
+  uram_spiked_mask[0] <= 1 (group 0 spiked)
+  spike_out_addr = 17'd0 (neuron h0)
+
+═══════════════════════════════════════════
+Input 3: From axon a2, weight=1000
+═══════════════════════════════════════════
+
+Cycle 200: IEP_ACCUMULATE
+  V_old = 0 (was just reset!)
+  V_new = 0 + 1000 = 1000
+
+Cycle 201: IEP_APPLY_MODEL
+  spike = (1000 >= 2000) = 0
+  V_final = 1000
+
+Cycle 202: IEP_WRITE_URAM
+  V = 1000
+
+Final state of h0: V = 1000, spiked once
 ```
 
 ---
 
-### Quick Reference Tables
+### Recurrent Processing: Hidden → Output Neurons
 
-#### Control Signal Summary
+When hidden neurons spike, they automatically trigger Phase 1b → Phase 2 again:
 
-| Signal | Type | Asserted By | Consumed By | Meaning | Typical Cycle |
-|--------|------|-------------|-------------|---------|---------------|
-| `exec_run` | Pulse | CI RX | All modules | Start new timestep | 0 |
-| `exec_bram_phase1_ready` | Level | EEP | HBM RX | BRAM pipeline filled | 4 |
-| `exec_bram_phase1_done` | Level | EEP | IEP | External spikes processed | 200 |
-| `exec_uram_phase1_ready` | Level | IEP | HBM RX | URAM pipeline filled | 210 |
-| `exec_uram_phase1_done` | Level | IEP | HBM TX | Internal pointers output | 500 |
-| `exec_hbm_tx_phase1_done` | Level | HBM TX | Internal | Pointer commands sent | 500 |
-| `exec_hbm_rx_phase1_done` | Level | HBM RX | HBM TX, Spike logic | Pointers received | 500 |
-| `exec_hbm_tx_phase2_done` | Level | HBM TX | HBM RX | Synapse commands sent | 1500 |
-| `exec_hbm_rx_phase2_done` | Level | HBM RX | IEP, CI | Synapses received | 1500 |
-| `exec_hbm_rvalidready` | Pulse | HBM RX | EEP, IEP | 512-bit packet ready | Every 2nd HBM read |
-| `exec_iep_phase2_done` | Level | IEP | CI RX | Neuron updates complete | 1500 |
-| `execRun_running` | Level | CI RX | CI TX | Execution active | 1-1530 |
-| `execRun_done` | Level | CI RX | CI TX | All timesteps complete | After last timestep |
+1. **internal_events_processor** outputs `exec_uram_spiked = 16'h0001` (group 0 spiked)
+2. **hbm_processor** Phase 1b: Reads neuron pointers from HBM Region 2
+3. **pointer_fifo_controller**: Adds neuron output pointers to FIFOs
+4. **hbm_processor** Phase 2: Reads synapses from HBM Region 3
+5. **internal_events_processor**: Updates output neurons o0-o4
 
----
+**For output neurons:**
+```
+Each output receives: 5 hidden neurons × 1000 weight = 5000 total
+o0: V = 0 + 5000 = 5000 >= 2000 → SPIKE (at V=2000, reset, then +3000 more)
+Final: V = 3000
 
-#### State Transition Summary
-
-**Command Interpreter RX:**
-```
-RESET → IDLE → (on command) → REGISTER_AXON_DATA → SET_AXON_DATA → IDLE
-                            → EXEC_STEP → WAIT_RUN → EXEC_DONE → IDLE
-                                               └─→ (loop) REGISTER_AXON_DATA
-```
-
-**Command Interpreter TX:**
-```
-RESET → IDLE → WAIT_FOR_SPIKES ⟷ SEND_SPIKES → IDLE
-```
-
-**HBM Processor TX:**
-```
-RESET → IDLE → SEND_INPUT_CMDS → SEND_OUTPUT_CMDS → PHASE1_DONE
-             → POP_PTR_FIFO ⟷ SEND_PTR_CMDS → PHASE2_DONE → IDLE
-```
-
-**HBM Processor RX:**
-```
-RESET → IDLE → WAIT_BRAM_PIPE → READ_INPUT_PTRS → WAIT_URAM_PIPE
-             → READ_OUTPUT_PTRS → PHASE1_DONE → READ_SYNAPSE_DATA
-             → PHASE2_DONE → IDLE
-```
-
-**External Events Processor:**
-```
-RESET → IDLE → FILL_PIPE → READ_INPUTS → PHASE1_DONE → IDLE
-```
-
-**Internal Events Processor:**
-```
-RESET → IDLE → FILL_PIPE_PH1 → WAIT_BRAM_DONE → PUSH_PTR
-             → PHASE1_DONE → (Phase 2 processing) → PHASE2_DONE → IDLE
+Output neuron synapses may have OpCode=100 (0b100) which marks them
+as "output spikes" to send to host.
 ```
 
 ---
 
-#### Variable Reference by Module
+### Reading Results: flush_spikes()
 
-**Command Interpreter:**
+#### Python Code: fpga_controller.flush_spikes()
 
-| Variable | Width | Initialize | Update | Purpose |
-|----------|-------|------------|--------|---------|
-| execRun_ctr | 32 | 0 (exec_run_rst) | exec_run_inc | Current timestep |
-| execRun_limit | 32 | 0 | exec_run_set | Target timesteps |
-| execRun_timer | 64 | 0 | +1 each cycle | Performance counter |
-| wait_clks_cnt | 5 | 0 | +1 in WAIT_RUN | Safety margin |
-| spike_ctr | 4 | 0 (spike_rst) | spike_inc | Batch size |
+File: `hs_bridge/FPGA_Execution/fpga_controller.py` (lines 273-343)
 
-**HBM Processor TX:**
+```python
+def flush_spikes(coreID=0):
+    """Reads spike packets from FPGA via PCIe"""
 
-| Variable | Width | Initialize | Update | Purpose |
-|----------|-------|------------|--------|---------|
-| tx_phase | 1 | 0 | tx_phase_inc | Phase selector |
-| tx_select | 1 | 0 | tx_select_inc | Input/output toggle |
-| tx_addr | 10 | 0 (tx_addr_rst) | tx_addr_inc | Group address |
-| ptr_addr | 23 | 0 | ptr_addr_set/inc | Synapse address |
-| ptr_len | 9 | 0 | ptr_addr_set | Synapse count |
-| ptr_ctr | 9 | 0 | ptr_addr_inc | Progress counter |
-| tx_ptr_ctr | 23 | 0 | ptr_addr_inc | Total sent |
+    packetNum = 1
+    spikeOutput = []
+    n = 0
 
-**HBM Processor RX:**
+    time.sleep(800/1000000.0)  # Wait 800 µs for processing
 
-| Variable | Width | Initialize | Update | Purpose |
-|----------|-------|------------|--------|---------|
-| rx_addr | 14 | 0 (rx_addr_rst) | rx_addr_inc | Pointer word count |
-| rx_ptr_ctr | 23 | 0 | +1 per hbm_rvalid | Synapse blocks received |
-| hbm_count | 1 | 0 | Toggle | Packet assembly |
+    while True:
+        exitCode, batchRead = dmadump.dma_dump_read(
+            1, 0, 0, 0, dmadump.DmaMethodNormal, 64*packetNum
+        )
 
-**External Events Processor:**
+        splitRead = np.array_split(batchRead, packetNum)
+        splitRead.reverse()
+        flushed = False
 
-| Variable | Width | Initialize | Update | Purpose |
-|----------|-------|------------|--------|---------|
-| bram_select | 1 | 0 | Toggle on exec_run | Buffer selector |
-| bramPresent_raddr | 14 | 0 | +1 | Read address (leading) |
-| bramPresent_waddr | 14 | 0 | +1 | Write address (lagging) |
+        for currentRead in splitRead:
+            # Check packet type by tag (bytes 62-63)
+            if (currentRead[62] == 255 and currentRead[63] == 255):
+                # FIFO Empty packet (0xFFFF tag)
+                n += 1
+                if n == 50:
+                    flushed = True
+                    break
+            elif (currentRead[62] == 238 and currentRead[63] == 238):
+                # Spike packet (0xEEEE tag)
+                executionRun_counter, spikeList = read_spikes(currentRead)
+                spikeOutput = spikeOutput + spikeList
+                n = 0
+            elif (currentRead[62] == 205 and currentRead[63] == 171):
+                # Latency packet (0xCDAB tag) - end of execution
+                executionRun_counter, spikeList = read_spikes(currentRead)
+                spikeOutput = spikeOutput + spikeList
+                flushed = True
+                break
+            else:
+                logging.error("Non-spike packet encountered")
 
-**Internal Events Processor:**
+        if flushed:
+            break
 
-| Variable | Width | Initialize | Update | Purpose |
-|----------|-------|------------|--------|---------|
-| uram_raddr | 13 | 0 | +1 | Global read address |
-| exec_uram_spiked | 16 | 0 | Set per group | Spike mask output |
+    return (spikeOutput, latency, hbmAcc)
+```
+
+#### Verilog: command_interpreter Batches Spikes
+
+File: `hardware_code/gopa/CRI_proj/command_interpreter.v` (lines 800-900, conceptual)
+
+```verilog
+// TX state machine: Collect spikes and send to host
+
+reg [3:0] tx_state;
+localparam TX_IDLE = 0;
+localparam TX_COLLECT_SPIKES = 1;
+localparam TX_BATCH_PACKET = 2;
+localparam TX_SEND = 3;
+
+reg [511:0] spike_packet;
+reg [3:0] spike_count;
+reg [16:0] spike_addr [0:13];  // Up to 14 spikes per packet
+
+always @(posedge aclk) begin
+    case (tx_state)
+        TX_IDLE: begin
+            if (!spk2ciFIFO_empty) begin
+                spike_count <= 4'd0;
+                tx_state <= TX_COLLECT_SPIKES;
+            end
+        end
+
+        TX_COLLECT_SPIKES: begin
+            if (!spk2ciFIFO_empty && spike_count < 14) begin
+                // Read spike from aggregated spike FIFO
+                spk2ciFIFO_rd_en <= 1'b1;
+                spike_addr[spike_count] <= spk2ciFIFO_dout;
+                spike_count <= spike_count + 1;
+            end else begin
+                // Either FIFO empty or batch full
+                tx_state <= TX_BATCH_PACKET;
+            end
+        end
+
+        TX_BATCH_PACKET: begin
+            // Build 512-bit spike packet
+            // [511:496] = 0xEEEE (spike packet tag)
+            // [495:32] = 14 × 32-bit spike entries
+            // [31:0] = timestep counter
+
+            spike_packet[511:496] <= 16'hEEEE;
+            spike_packet[31:0] <= execRun_ctr;
+
+            for (i = 0; i < 14; i = i + 1) begin
+                if (i < spike_count) begin
+                    // Valid spike
+                    spike_packet[(i*32)+32 +: 32] <=
+                        {7'b0, 1'b1, 7'b0, spike_addr[i]};
+                        // [31:25]=0, [24]=valid, [23:17]=0, [16:0]=address
+                end else begin
+                    // Unused slot
+                    spike_packet[(i*32)+32 +: 32] <= 32'h0;
+                end
+            end
+
+            tx_state <= TX_SEND;
+        end
+
+        TX_SEND: begin
+            // Write to txFIFO (goes to pcie2fifos → host)
+            txFIFO_wr_en <= 1'b1;
+            txFIFO_din <= spike_packet;
+
+            tx_state <= TX_IDLE;
+        end
+    endcase
+end
+```
+
+**Example spike packet for our network:**
+
+```
+512-bit packet:
+  Bits [511:496] = 16'hEEEE (spike packet identifier)
+  Bits [495:480] = Spike 0: {7'b0, 1'b1, 7'b0, 17'd5} (o0, valid)
+  Bits [479:464] = Spike 1: {7'b0, 1'b1, 7'b0, 17'd6} (o1, valid)
+  Bits [463:448] = Spike 2: {7'b0, 1'b1, 7'b0, 17'd7} (o2, valid)
+  Bits [447:432] = Spike 3: {7'b0, 1'b1, 7'b0, 17'd8} (o3, valid)
+  Bits [431:416] = Spike 4: {7'b0, 1'b1, 7'b0, 17'd9} (o4, valid)
+  Bits [415:32]  = Spikes 5-13: {32'h0} (unused)
+  Bits [31:0]    = 32'd0 (timestep counter)
+
+Host receives and parses:
+  spikeList = [(0, 5), (0, 6), (0, 7), (0, 8), (0, 9)]
+  Converts to: ['o0', 'o1', 'o2', 'o3', 'o4']
+```
 
 ---
 
-## Conclusion
+## Conclusion: The Complete Code Journey
 
-The state machine coordination in this neuromorphic system is a carefully orchestrated dance of four independent modules, synchronized through handshake signals and completion flags. The key insights are:
+We've now traced the complete code path from Python to Verilog and back:
 
-1. **Pipeline Priming:** BRAM and URAM require 3-cycle pipeline fills before streaming can begin
-2. **Two-Phase Architecture:** Phase 1 collects connectivity pointers, Phase 2 processes synaptic data
-3. **Handshake Synchronization:** Modules wait for `exec_*_ready` and `exec_*_done` signals
-4. **FIFO Buffering:** Pointer FIFOs and spike FIFOs decouple pipeline stages
-5. **Safety Margins:** Wait counters prevent race conditions and ensure complete data drainage
+**Setup:**
+1. `network.step(['a0', 'a1', 'a2'])` → `input_user()` creates 256-bit mask
+2. DMA writes to FPGA → `command_interpreter` receives opcode 0x00
+3. Writes to BRAM **Future buffer** (double-buffered)
 
-Understanding this coordination is essential for:
-- **Debugging:** Knowing where to look when execution stalls
-- **Optimization:** Identifying bottlenecks in the pipeline
-- **Extension:** Adding new modules or modifying behavior
-- **Verification:** Ensuring timing requirements are met
+**Execute:**
+4. `execute()` sends opcode 0x06 → `command_interpreter` reassigns buffer roles
+5. **Phase 1a:** `external_events_processor` reads Present BRAM → generates `exec_bram_spiked`
+6. **Phase 1a:** `hbm_processor` reads axon pointers from HBM Region 1
+7. **Phase 1a:** `pointer_fifo_controller` demuxes pointers to 16 FIFOs
 
-**Related Documentation:**
-- [Chapter 2.1](Chapter_2_1.md) - Conceptual overview of execution flow
-- [Chapter 2.2](Chapter_2_2.md) - Python and Verilog code walkthrough
-- [Chapter 3: Verilog Files Review](../3_Verilog_Files_Review/) - Module-specific implementation details
-- [command_interpreter.v](../3_Verilog_Files_Review/command_interpreter.md) - Orchestrator details
-- [hbm_processor.v](../3_Verilog_Files_Review/hbm_processor.md) - Memory access details
+**Process:**
+8. **Phase 2:** `pointer_fifo_controller` round-robin reads from FIFOs
+9. **Phase 2:** `hbm_processor` pops pointers → reads synapses from HBM Region 3
+10. **Phase 2:** `internal_events_processor` updates URAM @ 450 MHz
+    - h0: V=0 → 1000 → 2000 (spike!) → 0 → 1000
+    - Generates `exec_uram_spiked` for neurons that spiked
 
----
+**Recurrent:**
+11. **Phase 1b:** `hbm_processor` reads neuron pointers from HBM Region 2
+12. **Phase 1b:** `pointer_fifo_controller` adds neuron pointers to FIFOs
+13. **Phase 2:** Process hidden → output synapses (o0-o4 spike)
 
-**Total Duration:** ~500-1500 cycles per timestep (2.2-6.7 μs @ 225 MHz)
+**Output:**
+14. `spike_fifo_controller` aggregates spikes → `command_interpreter`
+15. `command_interpreter` batches spikes into 512-bit packets
+16. Sends via `txFIFO` → `pcie2fifos` → PCIe → Host
+17. `flush_spikes()` reads packets, parses: `['o0', 'o1', 'o2', 'o3', 'o4']`
 
-**Key Performance Factors:**
-- HBM latency (~100 cycles for first word)
-- Synaptic fanout (more connections = more Phase 2 time)
-- Spike rate (more spikes = more pointer fetches)
-- FIFO depths (prevent backpressure stalls)
+**Total time: ~2-5 microseconds** from input to output, with neurons updated at 450 MHz and HBM accessed via efficient burst reads.
+
+The beauty of this architecture is the **two-phase separation**: Phase 1 collects *where* to read (pointers), Phase 2 does the actual reading (synapses) and processing (neuron updates). This allows for efficient memory coalescing and high parallelism across 16 neuron groups.

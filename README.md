@@ -16,8 +16,9 @@ We will learn everything in the context of this network so that each component i
 
 ## [**Chapter 2**](chapter_2) = network processing timesteps
 (each network timestep consists of phases 0, 1, and 2)  
-[**2.1**](2_The_Network_Comes_to_Life/Chapter_2_1) Walks through phases 0, 1 and 2 *conceptually*, no code. Introduces FPGA/Verilog modules as black   boxes.
-[**2.2**](2_The_Network_Comes_to_Life/Chapter_2_2) Walks through phases 0, 1 and 2 in Verilog code; beginning to explain the FPGA/Verilog modules.
+[**2.1**](2_The_Network_Comes_to_Life/Chapter_2_1) Walks through phases 0, 1 and 2 *conceptually*, no code. Introduces FPGA/Verilog modules as black boxes.  
+[**2.2**](2_The_Network_Comes_to_Life/Chapter_2_2) Walks through phases 0, 1 and 2 in Verilog code; beginning to explain the FPGA/Verilog modules.  
+[**2.3**](2_The_Network_Comes_to_Life/Chapter_2_3) Introduces the concept and implementation of the State Machine.
 
 ## [**Chapter 3**](chapter_3) = Verilog file/module breakdown
 Each page of Chapter 3 is dedicated to a Verilog file. The first half of the page is essentially a README for the file, followed by Verilog file itself (heavily commented)

@@ -1,0 +1,6 @@
+- make mermaid diagrams for flow charts throughout the chapters
+- remove AI slop from writing
+- rewrite the read and write 4.2
+- write 4.3
+- record 15 minute video lectures for each map + the hardware component page
+** figure out how to implement RSTDP
