@@ -1,5 +1,5 @@
 ---
-title: "Reading and Writing Synapses via hs_api"
+title: "4.2 Reading and Writing Synapses via hs_api"
 parent: "4 Implementing RSTDP"
 nav_order: 2
 ---

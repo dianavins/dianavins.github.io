@@ -1,5 +1,5 @@
 ---
-title: "What is RSTDP?"
+title: "4.1 What is R-STDP?"
 parent: "4 Implementing RSTDP"
 nav_order: 1
 ---

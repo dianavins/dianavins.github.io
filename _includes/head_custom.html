@@ -1,0 +1,16 @@
+<!-- MathJax 3 — renders $$...$$, \[...\], $...$, and \(...\) across the site. -->
+<!-- Code blocks (`...`, ```...```, <pre>, <code>) are skipped so RTL/Python won't be interpreted as math. -->
+<script>
+  MathJax = {
+    tex: {
+      inlineMath: [['$', '$'], ['\\(', '\\)']],
+      displayMath: [['$$', '$$'], ['\\[', '\\]']],
+      processEscapes: true
+    },
+    svg: { fontCache: 'global' },
+    options: {
+      skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  };
+</script>
+<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
