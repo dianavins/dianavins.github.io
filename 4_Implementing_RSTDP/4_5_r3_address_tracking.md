@@ -6,7 +6,7 @@ nav_order: 5
 
 # 4.5 Tracking Region 3 Addresses Through HBM Bursts
 
-The Active Synapse Buffer in the next page wants to record, for every 512-bit synapse packet that arrives during Phase 2, **which R3 address it came from, so that we can determine the presynaptic neuron / specific synapse the pre/post spiking event is targeting.** Since the R4 address is computed from the R3 address, the synapse is easy to find from there. That information is not part of the packet — AXI4 read responses carry data and a small response ID, but not the address you asked for. The address has to be reconstructed.
+The Active Synapse Buffer in the next page wants to record, for every 512-bit synapse packet that arrives during Phase 2, **which R3 address it came from, so that we can determine the presynaptic neuron / specific synapse the pre/post spiking event is targeting.** Since the R4 address is computed from the R3 address, the synapse is easy to find from there. That information is not part of the packet. AXI4 read responses carry data and a small response ID, but not the address you asked for. The address has to be reconstructed.
 
 This page is about how `hbm_processor.v` does that reconstruction. It's a self-contained piece of plumbing; once you understand it, the ASB in [4.6](4_6_coincidence_detection), which holds memory of the active synapses for the current and previous timesteps becomes trivial.
 
@@ -14,7 +14,7 @@ This page is about how `hbm_processor.v` does that reconstruction. It's a self-c
 
 ## The problem
 
-Phase 2 of a timestep sends a sequence of read commands to HBM for synapse data. Each command is an AXI4 burst — one address-channel transfer (`hbm_arvalid`/`hbm_arready`) followed by up to 16 data-channel beats (`hbm_rvalid`/`hbm_rready`). The data beats stream back without re-stating the address.
+Phase 2 of a timestep sends a sequence of read commands to HBM for synapse data. Each command is an AXI4 burst, comprising one address-channel transfer (`hbm_arvalid`/`hbm_arready`) followed by up to 16 data-channel beats (`hbm_rvalid`/`hbm_rready`). The data beats stream back without re-stating the address.
 
 ```
 TX (commands)        AR    AR        AR
@@ -32,7 +32,7 @@ RX (beats)             R R   R R R R   R R R R
 
 AXI4 guarantees in-order responses per `arid`, and `hbm_processor` uses `arid=0` for everything, so the beats arrive in the same order the addresses were sent. That's the only handle we have.
 
-The original processor didn't need to know — Phase 2 just streams beats into IEP for membrane accumulation, no per-beat address bookkeeping. R-STDP needs the address because the ASB records it.
+The original processor didn't need to know, because Phase 2 just streams beats into IEP for membrane accumulation with no per-beat address bookkeeping. R-STDP needs the address because the ASB records it.
 
 ---
 
@@ -50,7 +50,7 @@ reg [BDFIFO_ADDR_BITS:0] bdfifo_wr_ptr;
 reg [BDFIFO_ADDR_BITS:0] bdfifo_rd_ptr;
 ```
 
-Each entry is 27 bits: a 23-bit base address and a 4-bit burst length. 128 entries is more than enough for any realistic Phase 2 — the FIFO clears between timesteps.
+Each entry is 27 bits: a 23-bit base address and a 4-bit burst length. 128 entries is more than enough for any realistic Phase 2, and the FIFO clears between timesteps.
 
 ### TX side: push one descriptor per burst command
 
@@ -68,7 +68,7 @@ TX_STATE_SEND_POINTER_READ_COMMANDS: begin
 end
 ```
 
-`bdfifo_push` strobes for one cycle each time HBM accepts an AR. The push uses the **current** `ptr_addr` and `ptr_burst` — the values that just got driven onto the AR channel:
+`bdfifo_push` strobes for one cycle each time HBM accepts an AR. The push uses the **current** `ptr_addr` and `ptr_burst`, which are the values that just got driven onto the AR channel:
 
 ```verilog
 if (bdfifo_push && !bdfifo_full) begin
@@ -109,7 +109,7 @@ For each valid beat, `rx_beat_addr` is the current address; it increments after 
 
 ```verilog
 if (exec_hbm_rvalidready_2x && rx_burst_active) begin
-    // (packet assembly — see next section)
+    // (packet assembly: see next section)
     rx_beat_addr      <= rx_beat_addr + 1'b1;
     rx_burst_beat_ctr <= rx_burst_beat_ctr + 1'b1;
 
@@ -132,7 +132,7 @@ output reg [22:0] exec_hbm_region3addr,  // Region 3 address of current 512-bit 
 
 This is updated on the same clock edge that the 512-bit packet becomes valid on `exec_hbm_rdata`. IEP latches both signals together.
 
-### Why "current 512-bit packet" — and how `hbm_count` makes the pairing
+### Why "current 512-bit packet," and how `hbm_count` makes the pairing
 
 HBM is 256 bits wide; IEP expects 512-bit packets (16 neuron-group slots × 32 bits). So `hbm_processor` combines two consecutive 256-bit beats into one 512-bit packet using a 1-bit toggle `hbm_count`:
 
@@ -167,7 +167,7 @@ if (exec_hbm_rvalidready_2x && rx_burst_active) begin
 end
 ```
 
-So `exec_hbm_region3addr` is *the address of beat 0 of the current 512-bit packet*. That's the R3 address the host originally typed into the host compiler — exactly what the ASB needs to record.
+So `exec_hbm_region3addr` is *the address of beat 0 of the current 512-bit packet*. That's the R3 address the host originally typed into the host compiler, which is exactly what the ASB needs to record.
 
 ---
 
@@ -175,7 +175,7 @@ So `exec_hbm_region3addr` is *the address of beat 0 of the current 512-bit packe
 
 If you're going to do anything that involves new RX states or extra HBM reads, you need to know about a bug that was fixed in step 8.
 
-`hbm_count` toggles every time `hbm_rvalid && hbm_rready` fires. The WUE introduced in [4.7](4_7_weight_update_engine) issues **three** beats per coincFIFO entry (1 × R4 + 2 × R3). Three is odd. So after WUE finishes, `hbm_count` is left at `1`. On the next `exec_run`, Phase 2 would start receiving the *first* beat of a synapse pair while thinking it was the *second* — corrupting every 512-bit packet for the rest of the run.
+`hbm_count` toggles every time `hbm_rvalid && hbm_rready` fires. The WUE introduced in [4.7](4_7_weight_update_engine) issues **three** beats per coincFIFO entry (1 × R4 + 2 × R3). Three is odd. So after WUE finishes, `hbm_count` is left at `1`. On the next `exec_run`, Phase 2 would start receiving the *first* beat of a synapse pair while thinking it was the *second*, corrupting every 512-bit packet for the rest of the run.
 
 The fix is at [`hbm_processor.v:972`](../../hardware_code_rstdp/src/hbm_processor.v#L972):
 
@@ -201,8 +201,8 @@ end
 
 Two distinct resets are in play here:
 
-1. **`tx_done_rst` on `exec_run`** — clears `hbm_count` at the start of every new timestep so Phase 2 always begins aligned.
-2. **WAIT_R4 consume** — clears `hbm_count` after the WUE's single-beat R4 read consumes a beat, so the first R3 beat that follows sees `hbm_count=0`.
+1. **`tx_done_rst` on `exec_run`** clears `hbm_count` at the start of every new timestep so Phase 2 always begins aligned.
+2. **WAIT_R4 consume** clears `hbm_count` after the WUE's single-beat R4 read consumes a beat, so the first R3 beat that follows sees `hbm_count=0`.
 
 A simulation-only assertion at [line 991](../../hardware_code_rstdp/src/hbm_processor.v#L991) catches future regressions:
 
@@ -242,4 +242,4 @@ That's the interface the ASB reads from in [4.6](4_6_coincidence_detection).
 - The output is `exec_hbm_region3addr`, valid on the same edge as the 512-bit `exec_hbm_rdata` packet.
 - `hbm_count` toggles to pair 256-bit beats into 512-bit packets. It must reset to `0` on `exec_run` (and after any odd-beat WUE read) or the next timestep's packets are misaligned.
 
-Next: [4.6](4_6_coincidence_detection) — the Active Synapse Buffer uses `exec_hbm_region3addr` and the 16 target URAM addresses inside each packet to record a per-timestep "who-targeted-whom" table, then compares it against the next timestep's spikes.
+Next, [4.6](4_6_coincidence_detection) shows how the Active Synapse Buffer uses `exec_hbm_region3addr` and the 16 target URAM addresses inside each packet to record a per-timestep "who-targeted-whom" table, then compares it against the next timestep's spikes.

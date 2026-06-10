@@ -6,7 +6,7 @@ nav_order: 12
 
 # 4.12 Where the Work Picks Up
 
-The hardware in 4.3–4.11 simulates a complete R-STDP loop. It is not yet running on silicon, integrated with `hs_api`, exercising a real RL task, or using a final eligibility-trace rule. This page is the punch list of what's open, in roughly the order you should attack it, with pointers to the design notes that already exist.
+The hardware in 4.3-4.11 simulates a complete R-STDP loop. It is not yet running on silicon, integrated with `hs_api`, exercising a real RL task, or using a final eligibility-trace rule. This page is the punch list of what's open, in roughly the order you should attack it, with pointers to the design notes that already exist.
 
 If you're a new student trying to pick a starting project: read this page top to bottom, then skim section 4 at the end ("How to choose a starting task"). Don't pick the biggest item first.
 
@@ -22,7 +22,7 @@ If you're a new student trying to pick a starting project: read this page top to
 c_new = saturate(c_old + et_increment)
 ```
 
-`et_increment` is a constant — there's no dependence on spike timing, no STDP kernel, no Δt logic. Every coincidence push (and every mem-only push) results in the same increment.
+`et_increment` is a constant. There's no dependence on spike timing, no STDP kernel, no Δt logic. Every coincidence push (and every mem-only push) results in the same increment.
 
 **What it should be:**
 
@@ -32,7 +32,7 @@ A proper STDP-windowed update. The form in [4.1](4_1_what_is_rstdp):
 ċ(t) = -c/τ_c + W(Δt) · δ(t − s_pre/post) · C_1
 ```
 
-translated to discrete timesteps gives `c_new = decay(c_old) + W(Δt)` where `W(Δt)` is the STDP kernel — typically exponential with a positive lobe for `Δt > 0` (potentiation) and a negative lobe for `Δt < 0` (depression).
+translated to discrete timesteps gives `c_new = decay(c_old) + W(Δt)` where `W(Δt)` is the STDP kernel, typically exponential with a positive lobe for `Δt > 0` (potentiation) and a negative lobe for `Δt < 0` (depression).
 
 **The hardware to add:**
 
@@ -43,9 +43,9 @@ translated to discrete timesteps gives `c_new = decay(c_old) + W(Δt)` where `W(
 **Caveats this opens up:**
 
 - The current design has one ET per synapse. STDP could fire at any pre-synaptic spike or any post-synaptic spike, but the current RMW path is only triggered by the coincFIFO (which is post-synaptic-spike-driven). Pre-only spikes don't update ETs. Decide whether that's acceptable for the regime you're modeling, or restructure.
-- Mem-only push entries (where there's no real coincidence, see [4.6](4_6_coincidence_detection)) currently *do* invoke ET RMW. With a proper STDP-windowed rule, this would be wrong — the rule would update an ET in response to pure Phase 2 traffic. Suppress the RMW for `do_wu = 0` entries.
+- Mem-only push entries (where there's no real coincidence, see [4.6](4_6_coincidence_detection)) currently *do* invoke ET RMW. With a proper STDP-windowed rule, this would be wrong, because the rule would update an ET in response to pure Phase 2 traffic. Suppress the RMW for `do_wu = 0` entries.
 
-**Suggested first cut:** a simple two-piece kernel — fixed positive `et_increment_post` on coincidence, fixed negative `et_increment_pre` on a (new) pre-only event path. Sweep `et_leak_shift` and the two increments until simple Pavlovian conditioning examples (from the [`prelimenary_rstdp/`](../../prelimenary_rstdp/) software runs) reproduce.
+**Suggested first cut:** a simple two-piece kernel with a fixed positive `et_increment_post` on coincidence and a fixed negative `et_increment_pre` on a (new) pre-only event path. Sweep `et_leak_shift` and the two increments until simple Pavlovian conditioning examples (from the [`prelimenary_rstdp/`](../../prelimenary_rstdp/) software runs) reproduce.
 
 ---
 
@@ -53,9 +53,9 @@ translated to discrete timesteps gives `c_new = decay(c_old) + W(Δt)` where `W(
 
 **Where it lives:**
 
-- [`hardware_code_rstdp/tb/step8_rstdp_100step_tb.sv`](../../hardware_code_rstdp/tb/step8_rstdp_100step_tb.sv) — the 100-step regression.
-- [`prelimenary_rstdp/`](../../prelimenary_rstdp/) — software R-STDP runs Diana built earlier (reference traces and plot scripts).
-- [`hardware_code_rstdp/tb/generate_network_commands_rstdp.py`](../../hardware_code_rstdp/tb/generate_network_commands_rstdp.py) — Python compiler scaffold for the test network.
+- [`hardware_code_rstdp/tb/step8_rstdp_100step_tb.sv`](../../hardware_code_rstdp/tb/step8_rstdp_100step_tb.sv): the 100-step regression.
+- [`prelimenary_rstdp/`](../../prelimenary_rstdp/): software R-STDP runs Diana built earlier (reference traces and plot scripts).
+- [`hardware_code_rstdp/tb/generate_network_commands_rstdp.py`](../../hardware_code_rstdp/tb/generate_network_commands_rstdp.py): Python compiler scaffold for the test network.
 
 **What's there now:** The 100-step TB runs and produces `prelimenary_rstdp/step8_rstdp_100step.csv` with spike rasters, ET values, reward timing, and weights per timestep. The PNG at `step8_rstdp_100step.png` is generated from that CSV.
 
@@ -75,7 +75,7 @@ This is mostly about *validation* rather than RTL work. It's a good entry point 
 
 **What needs to happen:**
 
-1. **Synthesis sanity check.** Run the RTL through Vivado synthesis. The ASB generate block (1024 comparators) and the WUE compute paths may exceed timing on the existing 225 MHz target — measure before optimizing.
+1. **Synthesis sanity check.** Run the RTL through Vivado synthesis. The ASB generate block (1024 comparators) and the WUE compute paths may exceed timing on the existing 225 MHz target, so measure before optimizing.
 2. **Resource budget.** ASB is ~30 Kb of registers. Make sure the target part has it; the original ISN spec ([`hardware_code_original/ISN - Documentation.pdf`](../../hardware_code_original/ISN%20-%20Documentation.pdf)) lists URAM/BRAM/register budgets you can compare against.
 3. **Bitstream + smoke.** Generate a bitstream, load it onto the FPGA via the existing JTAG/PCIe flow. Run the smallest possible network (one axon, one neuron, one synapse) and verify it does the right thing.
 4. **Telemetry.** The current TB peeks RTL internals (`dbg_wue_*`, `dbg_et_*`, `et_rmw_state`). None of that is visible from the host once the bitstream is loaded. Decide which debug signals to expose as VIO/ILA or as readable CI registers *before* synthesizing.
@@ -90,7 +90,7 @@ This is the single biggest piece of work, and the design notes for it already ex
 
 ### 4a. CI opcode gap
 
-The three new CI commands (`CMD_SET_REWARD = 0x0A`, `CMD_SET_ET_PARAMS = 0x0B`, `CMD_SET_ET_RANGE = 0x0C`) have no host-side counterpart. The host-side opcode file [`formats.org`](../../hs_bridge/) only knows about the original opcodes (0x01–0x04, 0x06–0x08). Add the three new ones with their bit positions; the host driver and the RTL CI must agree.
+The three new CI commands (`CMD_SET_REWARD = 0x0A`, `CMD_SET_ET_PARAMS = 0x0B`, `CMD_SET_ET_RANGE = 0x0C`) have no host-side counterpart. The host-side opcode file [`formats.org`](../../hs_bridge/) only knows about the original opcodes (0x01-0x04, 0x06-0x08). Add the three new ones with their bit positions; the host driver and the RTL CI must agree.
 
 This is the single most common silent-failure source. Do it before anything else in this section.
 
@@ -98,15 +98,15 @@ This is the single most common silent-failure source. Do it before anything else
 
 Migrate, validating at each layer:
 
-1. **RTL** — confirm the new opcodes parse correctly through the same packet path the TB uses (`ci2hbm`, `ci2iep`, `axonEvent`). [4.11](4_11_host_style_tb_level2)'s Level 2 TBs already do this.
-2. **`hs_bridge`** — add Python functions in [`hs_bridge/base_functions.py`](../../hs_bridge/) that emit the right 512-bit hex string and hand it to `adxdma_dmadump wb`. Mirror the existing `execute()` / `write` / `read` pattern.
-3. **`hs_api`** — expose those as methods on `Network` (e.g. `network.set_reward(1)`, `network.set_et_params(inc, leak)`). Match the existing API style.
+1. **RTL.** Confirm the new opcodes parse correctly through the same packet path the TB uses (`ci2hbm`, `ci2iep`, `axonEvent`). [4.11](4_11_host_style_tb_level2)'s Level 2 TBs already do this.
+2. **`hs_bridge`.** Add Python functions in [`hs_bridge/base_functions.py`](../../hs_bridge/) that emit the right 512-bit hex string and hand it to `adxdma_dmadump wb`. Mirror the existing `execute()` / `write` / `read` pattern.
+3. **`hs_api`.** Expose those as methods on `Network` (e.g. `network.set_reward(1)`, `network.set_et_params(inc, leak)`). Match the existing API style.
 
-Don't try to jump from RTL straight to `hs_api` — debugging across all three layers at once is hard.
+Don't try to jump from RTL straight to `hs_api`. Debugging across all three layers at once is hard.
 
 ### 4c. Network compilation: the OUTPUT pointer page
 
-[`hs_bridge/compile_network.py`](../../hs_bridge/) already builds the INPUT pointer page (axon pointers) at HBM `0x000000`. The on-chip neuron-to-neuron Phase 1b path (validated by Level 2 test T5) needs the OUTPUT pointer page at HBM `0x004000` — one entry per neuron pointing at its downstream synapses.
+[`hs_bridge/compile_network.py`](../../hs_bridge/) already builds the INPUT pointer page (axon pointers) at HBM `0x000000`. The on-chip neuron-to-neuron Phase 1b path (validated by Level 2 test T5) needs the OUTPUT pointer page at HBM `0x004000`, with one entry per neuron pointing at its downstream synapses.
 
 If the existing compiler doesn't emit this page, that's the biggest single piece of new compiler work. Confirm before tackling later items.
 
@@ -117,7 +117,7 @@ Each R-STDP synapse maps to a URAM ET cell. The current `generate_network_comman
 ```python
 def assign_et_address(synapse):
     # Given a synapse, return its URAM ET full address.
-    # Must be deterministic — host and TB must produce the same mapping.
+    # Must be deterministic: host and TB must produce the same mapping.
     ...
 ```
 
@@ -158,7 +158,7 @@ Between sim-only and real bitstream, there's a useful middle step: keep the RTL 
 
 ## 5. `simpleSim` integration
 
-**Where it lives:** [`hs_api/simpleSim.py`](../../hs_api/) — the Python software simulator that mirrors hardware behavior for development without an FPGA.
+**Where it lives:** [`hs_api/simpleSim.py`](../../hs_api/), the Python software simulator that mirrors hardware behavior for development without an FPGA.
 
 **Status:** No R-STDP support. Stops at the original two-phase model.
 
@@ -199,10 +199,10 @@ This depends on items 1 (rule fix), 3 (bitstream), and 4 (`hs_api`). It's the ca
 | If you have … | Start with … |
 |---|---|
 | Strong Python, light Verilog | Item 5 (`simpleSim`) or item 2 (trace comparison). |
-| Strong Verilog, light SNN theory | Item 1 (ET rule) once you read up on STDP — or [`RTL_fixes_explained.txt`](../../hardware_code_rstdp/RTL_fixes_explained.txt) and look for any remaining edge cases. |
+| Strong Verilog, light SNN theory | Item 1 (ET rule) once you read up on STDP, or [`RTL_fixes_explained.txt`](../../hardware_code_rstdp/RTL_fixes_explained.txt) and look for any remaining edge cases. |
 | Strong systems / driver background | Item 4 (`hs_api`/`hs_bridge` migration). The plan in `hs_bridge_and_api_plan.txt` is thorough; the work is mechanical once you understand the existing driver. |
 | Strong digital design + want a synthesis project | Item 3 (bitstream + on-FPGA smoke). Doesn't require deep SNN knowledge; lots of practical FPGA debug. |
-| Strong SNN + RL background | Item 6 (Frozen Lake) — but only after items 1, 3, 4 land. |
+| Strong SNN + RL background | Item 6 (Frozen Lake), but only after items 1, 3, 4 land. |
 
 **Avoid:** Trying to do item 6 first. Trying to "rewrite the ET rule" without first running the existing 100-step TB and understanding where the current rule produces wrong behavior. Trying to do hs_api integration without first reading `hs_bridge_and_api_plan.txt` end-to-end.
 
@@ -227,9 +227,9 @@ A new student will benefit from reading these in order. They're all in [`hardwar
 
 The simulation-only outputs are checked in:
 
-- [`prelimenary_rstdp/step8_rstdp_100step.csv`](../../prelimenary_rstdp/) — the 100-step golden CSV.
-- [`prelimenary_rstdp/step8_rstdp_100step.png`](../../prelimenary_rstdp/) — the plot of that CSV.
-- [`hardware_code_rstdp/tb_logs/`](../../hardware_code_rstdp/tb_logs/) — recent simulation log outputs. Useful for diffing against a fresh run after RTL changes.
+- [`prelimenary_rstdp/step8_rstdp_100step.csv`](../../prelimenary_rstdp/): the 100-step golden CSV.
+- [`prelimenary_rstdp/step8_rstdp_100step.png`](../../prelimenary_rstdp/): the plot of that CSV.
+- [`hardware_code_rstdp/tb_logs/`](../../hardware_code_rstdp/tb_logs/): recent simulation log outputs. Useful for diffing against a fresh run after RTL changes.
 
 If you change the RTL, regenerate both files and check the diff carefully before committing.
 
@@ -237,6 +237,6 @@ If you change the RTL, regenerate both files and check the diff carefully before
 
 ## End of Chapter 4
 
-That's everything currently known and currently open in the R-STDP hardware track. Future chapters will accrete as items in this page complete. If you finish something on the list, update this page (and the relevant page above) — the docs are the handoff, not the code.
+That's everything currently known and currently open in the R-STDP hardware track. Future chapters will accrete as items in this page complete. If you finish something on the list, update this page (and the relevant page above), because the docs are the handoff, not the code.
 
 Welcome to the project.

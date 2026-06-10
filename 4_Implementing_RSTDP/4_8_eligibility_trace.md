@@ -10,8 +10,8 @@ The eligibility trace `c(t)` is the bridge between coincidence and reward. It ac
 
 In the FPGA, `c(t)` is a 36-bit signed integer stored in URAM, one per learning synapse. The host compiler assigns each synapse a URAM cell ([4.4](4_4_reward_and_address_mapping)), and `internal_events_processor.v` runs two pieces of machinery on those cells:
 
-1. The **ET RMW FSM** — services WUE's "increment this ET" requests asynchronously, one at a time.
-2. The **ET decay sweep** — runs once per timestep after WUE finishes; applies a shift-decay across the configured URAM range.
+1. The **ET RMW FSM** services WUE's "increment this ET" requests asynchronously, one at a time.
+2. The **ET decay sweep** runs once per timestep after WUE finishes; it applies a shift-decay across the configured URAM range.
 
 This page covers both, the CI commands that configure them, and an honest caveat about the rule itself.
 
@@ -27,7 +27,7 @@ c_new = saturate(c_old + et_increment)
 
 That's an unsigned-style integer increment plus a saturating clamp. It is *not* a fully correct STDP-windowed eligibility trace. A correct implementation would gate the increment on the sign of `Δt = t_post − t_pre`, scale it by a kernel, or replace the constant `et_increment` with the output of a per-synapse STDP function ([4.1](4_1_what_is_rstdp) goes through the math).
 
-The current RTL is enough to make the *plumbing* — handshake, RMW timing, decay sweep, saturation — work end-to-end and pass the integration TB. When you replace the rule, the only block you'll need to touch is the arithmetic in `ET_RMW_WAIT` (covered below). Everything around it (the FSM, URAM steering, decay sweep) is rule-independent and should stay.
+The current RTL is enough to make the *plumbing* (handshake, RMW timing, decay sweep, saturation) work end-to-end and pass the integration TB. When you replace the rule, the only block you'll need to touch is the arithmetic in `ET_RMW_WAIT` (covered below). Everything around it (the FSM, URAM steering, decay sweep) is rule-independent and should stay.
 
 If you're tasked with fixing the rule, start here, then move on to [4.12](4_12_next_steps).
 
@@ -42,7 +42,7 @@ From [4.4](4_4_reward_and_address_mapping):
 - Each 72-bit word holds **two** 36-bit signed values (upper + lower half).
 - The 13-bit URAM full address splits as `{row[12:1], half_select[0]}`.
 
-ETs share URAM with neuron membrane potentials. The host compiler is responsible for assigning ET addresses outside the address range used by membrane potentials. The configured ET range is `[et_uram_start_raddr .. et_uram_end_raddr]` — exposed to IEP as 13-bit ports, set by `CMD_SET_ET_RANGE`. The decay sweep uses this range; the RMW FSM has no opinion on which addresses are "valid ET addresses" — it accesses whichever URAM cell WUE points it at.
+ETs share URAM with neuron membrane potentials. The host compiler is responsible for assigning ET addresses outside the address range used by membrane potentials. The configured ET range is `[et_uram_start_raddr .. et_uram_end_raddr]`, exposed to IEP as 13-bit ports and set by `CMD_SET_ET_RANGE`. The decay sweep uses this range; the RMW FSM has no opinion on which addresses are "valid ET addresses" and accesses whichever URAM cell WUE points it at.
 
 A typical sim setup uses `et_uram_start_raddr = 13'd2` (row 1, lower half), keeping ETs above neuron row 0 (see MEMORY.md).
 
@@ -97,7 +97,7 @@ end
 
 ### The five states
 
-#### ET_RMW_IDLE — wait, then start when URAM is free
+#### ET_RMW_IDLE: wait, then start when URAM is free
 
 ```verilog
 ET_RMW_IDLE: begin
@@ -110,9 +110,9 @@ end
 
 The `!uram_rden` guard is critical: the main FSM (Phase 1 scan, Phase 2 accumulation, ET decay) drives the *scalar* `uram_rden` signal to all 16 banks in lockstep. If the ET RMW FSM tries to assert a different per-group `uram_rden_G` at the same time, both fire and you get a collision. By waiting for `uram_rden == 0`, the ET RMW FSM ensures it has exclusive access to the URAM read bus.
 
-This wait is normally short. WUE's `wue_et_addr_valid` fires in `RX_STATE_WUE_WAIT_R4` — after Phase 2 has ended and before the ET decay sweep starts — so the main FSM is in `STATE_POP_PTR_FIFO` with `uram_rden=0` most of the time.
+This wait is normally short. WUE's `wue_et_addr_valid` fires in `RX_STATE_WUE_WAIT_R4`, after Phase 2 has ended and before the ET decay sweep starts, so the main FSM is in `STATE_POP_PTR_FIFO` with `uram_rden=0` most of the time.
 
-#### ET_RMW_READ — steer the read
+#### ET_RMW_READ: steer the read
 
 When this state is active, two combinational paths route the read to the target group only:
 
@@ -144,7 +144,7 @@ ET_RMW_READ: begin
 end
 ```
 
-#### ET_RMW_WAIT — capture the old value, compute the new
+#### ET_RMW_WAIT: capture the old value, compute the new
 
 URAM has 1-cycle read latency, so the data arrives one cycle after `rden`. WAIT handles that:
 
@@ -186,7 +186,7 @@ Step by step:
 
 **This is the line you change when you implement a proper STDP rule.** Replace `et_increment` with whatever function of `Δt`, `et_old`, and any other signals you want. The 37-bit math and saturation stay.
 
-#### ET_RMW_WRITE — write back, signal completion
+#### ET_RMW_WRITE: write back, signal completion
 
 ```verilog
 ET_RMW_WRITE: begin
@@ -199,7 +199,7 @@ ET_RMW_WRITE: begin
 end
 ```
 
-The actual URAM write is driven by combinational logic outside the FSM — per-group `uram_wren_G` and `uram_wdata_G`, both of which have an `et_rmw_state == ET_RMW_WRITE` case at the top of their priority chains:
+The actual URAM write is driven by combinational logic outside the FSM: per-group `uram_wren_G` and `uram_wdata_G`, both of which have an `et_rmw_state == ET_RMW_WRITE` case at the top of their priority chains:
 
 `uram_wren_G` at [line 1555](../../hardware_code_rstdp/src/internal_events_processor.v#L1555):
 
@@ -232,7 +232,7 @@ A single-cycle bubble so `iep_et_valid` is exactly one cycle wide. Then back to 
 ```
 Cycle  0: wue_et_addr_valid pulses; et_rmw_pending <= 1
 Cycle  1: IDLE: wait for uram_rden=0
-   ...    (could stall here while Phase 2 is still using the URAM bus —
+   ...    (could stall here while Phase 2 is still using the URAM bus -
             in WUE flow this is usually already true)
 Cycle  N: → READ; per-group rden fires
 Cycle  N+1: WAIT; URAM data arrives; compute sum, saturate
@@ -272,9 +272,9 @@ end
 
 Three conditions to enter decay:
 
-1. `exec_wue_done` — coincFIFO drained, WUE returned to RX_IDLE.
-2. `et_rmw_state == ET_RMW_IDLE` — any in-flight ET RMW finished. Without this guard, the last entry's RMW could collide with the decay sweep.
-3. ET configuration is sane (`start_raddr != 0`, `et_leak_shift != 0`). Setting either to 0 disables decay entirely — useful for tests that want to verify ET accumulation without confounding it with decay.
+1. `exec_wue_done`: coincFIFO drained, WUE returned to RX_IDLE.
+2. `et_rmw_state == ET_RMW_IDLE`: any in-flight ET RMW finished. Without this guard, the last entry's RMW could collide with the decay sweep.
+3. ET configuration is sane (`start_raddr != 0`, `et_leak_shift != 0`). Setting either to 0 disables decay entirely, which is useful for tests that want to verify ET accumulation without confounding it with decay.
 
 ### Sweep address
 
@@ -301,7 +301,7 @@ end
 
 `et_raddr` walks from `et_uram_start_raddr` to `et_uram_end_raddr` inclusive. One URAM word per iteration.
 
-### Read–wait–write sequence
+### Read-wait-write sequence
 
 ```
 STATE_ET_DECAY_READ      uram_rden=1; address = et_raddr
@@ -326,7 +326,7 @@ end else if (curr_state == STATE_ET_DECAY_READ ||
 end
 ```
 
-Note: `{et_raddr[12:1], 1'b0}` — the sweep always uses the *lower* half-select, because both halves of each URAM word are processed in one pass (next).
+Note that `{et_raddr[12:1], 1'b0}` means the sweep always uses the *lower* half-select, because both halves of each URAM word are processed in one pass (next).
 
 ### The decay function
 
@@ -349,7 +349,7 @@ c_new = c_old - (c_old >>> et_leak_shift)
 
 `>>>` is arithmetic right shift (sign-preserving). So `et_leak_shift=4` gives ~94% retention per timestep; `et_leak_shift=8` gives ~99.6%. The host picks the value based on the desired decay time constant.
 
-`et_leak_shift = 0` disables decay — the entry guard above bypasses the sweep states entirely in that case.
+`et_leak_shift = 0` disables decay; the entry guard above bypasses the sweep states entirely in that case.
 
 ### Cost
 
@@ -471,9 +471,9 @@ Three cycles from READ to WRITE, plus latch and IDLE-exit overhead.
 
 - ETs live in URAM, two ETs per 72-bit word, addressed by a 13-bit full address (`{row[11:0], half_select}`).
 - The ET RMW FSM is asynchronous to the main IEP FSM: it can latch a request from WUE in any state, but only *starts* the RMW when `uram_rden=0`.
-- The RMW arithmetic is `c_new = saturate(c_old + et_increment)` in 37-bit signed. This is a placeholder — the real STDP-windowed rule is open work.
+- The RMW arithmetic is `c_new = saturate(c_old + et_increment)` in 37-bit signed. This is a placeholder; the real STDP-windowed rule is open work.
 - The decay sweep runs once per timestep after WUE, walks `[et_uram_start_raddr .. et_uram_end_raddr]`, applies `c -= c >>> et_leak_shift` to both halves of each word.
 - All four parameters (`et_increment`, `et_leak_shift`, `et_uram_start_raddr`, `et_uram_end_raddr`) come from CI commands `CMD_SET_ET_PARAMS` and `CMD_SET_ET_RANGE`.
-- The reward gate is *not* in this path. ETs always update; only the weight write (in WUE) is gated by `exec_reward`. That's deliberate — eligibility persists across reward boundaries.
+- The reward gate is *not* in this path. ETs always update; only the weight write (in WUE) is gated by `exec_reward`. That's deliberate: eligibility persists across reward boundaries.
 
-Next: [4.9](4_9_full_timestep_walkthrough) — all five new pieces stitched together for one full R-STDP timestep, on the 5-axon network we've been using.
+Next, [4.9](4_9_full_timestep_walkthrough) stitches all five new pieces together for one full R-STDP timestep, on the 5-axon network we've been using.

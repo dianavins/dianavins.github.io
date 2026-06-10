@@ -15,7 +15,7 @@ The Weight Update Engine (WUE) consumes the coincFIFO entries that [4.6](4_6_coi
 5. If `do_wu` and `exec_reward` are both set, writes the new weight back to R3.
 6. Loops to the next coincFIFO entry.
 
-WUE lives entirely inside [`hbm_processor.v`](../../hardware_code_rstdp/src/hbm_processor.v). It adds four TX states, five RX states, ~30 registers, and a handshake with IEP. This page covers everything except the IEP-side ET RMW — that's [4.8](4_8_eligibility_trace).
+WUE lives entirely inside [`hbm_processor.v`](../../hardware_code_rstdp/src/hbm_processor.v). It adds four TX states, five RX states, ~30 registers, and a handshake with IEP. This page covers everything except the IEP-side ET RMW, which is covered in [4.8](4_8_eligibility_trace).
 
 ---
 
@@ -99,7 +99,7 @@ Transitions, simplified:
                 └────────────► loop to POP ──────────┘
 ```
 
-The RX side is the more interesting half — it's where the data actually arrives and where the ET handshake completes. We'll get to that.
+The RX side is the more interesting half: it's where the data actually arrives and where the ET handshake completes. We'll get to that.
 
 ### TX_STATE_WUE_POP_COINCFIFO
 
@@ -108,7 +108,7 @@ The RX side is the more interesting half — it's where the data actually arrive
 ```verilog
 TX_STATE_WUE_POP_COINCFIFO: begin
     if (wue_wb_active) begin
-        // Pending write (R3 after R4) — dispatch it before checking FIFO
+        // Pending write (R3 after R4): dispatch it before checking FIFO
         tx_next_state = TX_STATE_WRITE_HBM_ADDR;
     end else if (coincfifo_empty) begin
         tx_next_state = TX_STATE_IDLE;
@@ -176,7 +176,7 @@ TX_STATE_WUE_SEND_R4_READ: begin
 end
 ```
 
-So the TX side issues both reads in immediate succession — no waiting. The RX side will receive R4 first, then R3.
+So the TX side issues both reads in immediate succession, with no waiting. The RX side will receive R4 first, then R3.
 
 ### TX_STATE_WUE_WAIT_RX
 
@@ -214,7 +214,7 @@ localparam [3:0] RX_STATE_WUE_COMPUTE         = 4'd13;
 localparam [3:0] RX_STATE_WUE_DONE            = 4'd14;
 ```
 
-### WAIT_R4 — receive R4 beat, kick the ET RMW
+### WAIT_R4: receive R4 beat, kick the ET RMW
 
 [Line 1122](../../hardware_code_rstdp/src/hbm_processor.v#L1122):
 
@@ -236,9 +236,9 @@ The R4 beat's low 13 bits *are* the URAM full address of this synapse's ET cell 
 - Latches the pointer for its own debug.
 - Drives `wue_et_uram_addr`, `wue_et_group_idx`, and a one-cycle pulse on `wue_et_addr_valid` over to IEP. This is what kicks the IEP ET RMW FSM ([4.8](4_8_eligibility_trace)).
 
-`hbm_count` also resets here — see [4.5](4_5_r3_address_tracking) for why.
+`hbm_count` also resets here (see [4.5](4_5_r3_address_tracking) for why).
 
-### WAIT_R3_BEAT0 and WAIT_R3_BEAT1 — receive the 512-bit synapse packet
+### WAIT_R3_BEAT0 and WAIT_R3_BEAT1: receive the 512-bit synapse packet
 
 R3 reads are 2-beat bursts. Two RX states, one per beat, at [line 1132](../../hardware_code_rstdp/src/hbm_processor.v#L1132):
 
@@ -270,12 +270,12 @@ There are 16 × 32-bit synapse slots in that 512 bits, one per group. The 16-bit
 wue_old_w_comb = wue_synapse[(15 - wue_group_idx)*32 +: 16];
 ```
 
-The `(15 - wue_group_idx)*32 +: 16` slice picks the weight bits of slot G. The other 16 bits of the slot are the OpCode + target address (see [Chapter 1.1](../1_Initializing_the_Network/Chapter_1_1)) — irrelevant for the weight update; we'll preserve them when writing back.
+The `(15 - wue_group_idx)*32 +: 16` slice picks the weight bits of slot G. The other 16 bits of the slot are the OpCode + target address (see [Chapter 1.1](../1_Initializing_the_Network/Chapter_1_1)), irrelevant for the weight update; we'll preserve them when writing back.
 
 There's also a parallel path that latches `iep_et_value` whenever IEP pulses `iep_et_valid`. This is fired *outside* the RX `case` statement so it works regardless of which RX state is active when the ET comes back:
 
 ```verilog
-// Latch iep_et_value whenever iep_et_valid is asserted — fires in any RX state
+// Latch iep_et_value whenever iep_et_valid is asserted (fires in any RX state)
 if (iep_et_valid) begin
     wue_et_received      <= iep_et_value;
     wue_et_done          <= 1'b1;
@@ -286,9 +286,9 @@ if (iep_et_valid) begin
 end
 ```
 
-The `dbg_r3_arrived_first` / `dbg_et_arrived_first` flags help debug timing races — usually R3 arrives first (HBM latency > URAM read latency), but neither is guaranteed.
+The `dbg_r3_arrived_first` / `dbg_et_arrived_first` flags help debug timing races. Usually R3 arrives first (HBM latency > URAM read latency), but neither is guaranteed.
 
-### WUE_COMPUTE — stall until both R3 and ET are done
+### WUE_COMPUTE: stall until both R3 and ET are done
 
 [Line 1145](../../hardware_code_rstdp/src/hbm_processor.v#L1145):
 
@@ -351,7 +351,7 @@ The clamp matters because R3 stores weights as 16-bit signed. If the eligibility
 
 R3 stores 16 synapse slots per 512-bit packet (2 × 256-bit beats). Group 0 occupies the top of the upper beat; group 15 occupies the bottom of the lower beat. The write-back has to:
 
-1. Pick *which* 256-bit beat to write (beat 0 for groups 0–7, beat 1 for groups 8–15 — wait, it's the reverse, see below).
+1. Pick *which* 256-bit beat to write (beat 0 for groups 0-7, beat 1 for groups 8-15. Wait, it's the reverse, see below).
 2. Splice the new 16-bit weight into the right slot of that beat.
 3. Leave every other bit untouched (other groups' weights, the OpCode and target address fields).
 
@@ -383,7 +383,7 @@ always @(*) begin
 end
 ```
 
-Note the "groups 0–7 are in beat 1, groups 8–15 are in beat 0" — that's because the 512-bit packet is assembled with beat 1 on top:
+Note the "groups 0-7 are in beat 1, groups 8-15 are in beat 0": that's because the 512-bit packet is assembled with beat 1 on top:
 
 ```
 wue_synapse [511:0] = {wue_r3_beat1, wue_r3_beat0}
@@ -414,7 +414,7 @@ Three cases:
 | 1 | 0 | No write. Coincidence happened, but no reward → eligibility trace was updated (in IEP), weight stays put. |
 | 1 | 1 | Write. R-STDP active update. |
 
-This is the *only* place in the RTL where `exec_reward` is consumed. Everything else — coincidence detection, ET RMW — runs independently of reward.
+This is the *only* place in the RTL where `exec_reward` is consumed. Everything else (coincidence detection, ET RMW) runs independently of reward.
 
 ---
 
@@ -450,7 +450,7 @@ TX_STATE_WRITE_HBM_RESP: begin
     hbm_bready = 1'b1;
     if (hbm_bvalid) begin
         if (wue_wb_active) begin
-            // WUE write complete — loop back to pop next entry
+            // WUE write complete: loop back to pop next entry
             tx_next_state = TX_STATE_WUE_POP_COINCFIFO;
         end else begin
             ci2hbm_rden = 1'b1;
@@ -493,7 +493,7 @@ WUE exposes several debug registers for the integration TB. All listed on the mo
 | `dbg_wue_group_idx` | reg | Group index decoded from group_mask. |
 | `dbg_wue_old_weight` | reg | Old weight extracted from R3 packet. |
 | `dbg_wue_new_weight` | reg | Computed new weight after clamp. |
-| `dbg_wue_wb_valid` | one cycle | On `hbm_bvalid` after WUE write — "the write committed." |
+| `dbg_wue_wb_valid` | one cycle | On `hbm_bvalid` after WUE write, signaling "the write committed." |
 | `dbg_wue_et_received` | reg | The `iep_et_value` we used in the sum. |
 | `dbg_wue_et_addr_valid` | one cycle | When WUE sent the URAM addr to IEP. |
 | `dbg_iep_et_valid` | one cycle | When IEP returned the new ET. |
@@ -588,7 +588,7 @@ POP_COINCFIFO
   → IDLE → triggers IEP ET decay sweep
 ```
 
-For an entry with `do_wu=1, exec_reward=0`, the same flow runs through compute but `wue_r3_wb_pending` stays 0; TX skips straight from WAIT_RX back to POP. For `do_wu=0`, same — and the membrane update path in IEP still picks up the synapse via `exec_wue_r3_valid` regardless.
+For an entry with `do_wu=1, exec_reward=0`, the same flow runs through compute but `wue_r3_wb_pending` stays 0; TX skips straight from WAIT_RX back to POP. For `do_wu=0`, the same is true, and the membrane update path in IEP still picks up the synapse via `exec_wue_r3_valid` regardless.
 
 ---
 
@@ -599,6 +599,6 @@ For an entry with `do_wu=1, exec_reward=0`, the same flow runs through compute b
 - The compute is a 16-bit signed clamp of `old_w + et_received`, spliced into the correct slot of the correct R3 beat.
 - The write-back happens only if `do_wu && exec_reward`. Mem-only entries (`do_wu=0`) never write.
 - Write-back uses the same AXI machinery as CI writes; one beat per entry; CI writes wait until WUE drains.
-- The `hbm_count` reset on `RX_STATE_WUE_WAIT_R4` is what keeps Phase 2 packet assembly correct in the *next* timestep — don't remove it.
+- The `hbm_count` reset on `RX_STATE_WUE_WAIT_R4` is what keeps Phase 2 packet assembly correct in the *next* timestep. Don't remove it.
 
-Next: [4.8](4_8_eligibility_trace) — what happens inside IEP when `wue_et_addr_valid` pulses: the ET RMW FSM, the saturating add, the decay sweep, and the open caveat about the rule itself.
+Next, [4.8](4_8_eligibility_trace) explains what happens inside IEP when `wue_et_addr_valid` pulses: the ET RMW FSM, the saturating add, the decay sweep, and the open caveat about the rule itself.

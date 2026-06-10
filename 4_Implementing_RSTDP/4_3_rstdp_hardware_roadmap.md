@@ -8,7 +8,7 @@ nav_order: 3
 
 [4.1](4_1_what_is_rstdp) gave the biology and math. [4.2](4_2_synapse_read_write) showed how the host already reads and writes weights through `hs_api`. The rest of Chapter 4 documents the **hardware** that makes R-STDP run on the FPGA without host involvement on the hot path.
 
-This page is the map. Read it once, then dip into 4.4–4.12 in order. Every page after this one assumes you've finished Chapters 0–3, [4.1](4_1_what_is_rstdp), and [4.2](4_2_synapse_read_write).
+This page is the map. Read it once, then dip into 4.4-4.12 in order. Every page after this one assumes you've finished Chapters 0-3, [4.1](4_1_what_is_rstdp), and [4.2](4_2_synapse_read_write).
 
 The source under discussion lives in [`hardware_code_rstdp/`](https://github.com/dianavins/dianavins.github.io). The original (pre-R-STDP) modules covered in [Chapter 3](../chapter_3) are still the foundation; the R-STDP work *extends* `hbm_processor.v` and `internal_events_processor.v` rather than replacing them.
 
@@ -18,11 +18,11 @@ The source under discussion lives in [`hardware_code_rstdp/`](https://github.com
 
 To run R-STDP on the FPGA, the hardware has to do three things the original processor never did:
 
-1. **Detect coincidences in hardware.** For every neuron that spikes this timestep, find every pre-synaptic axon/neuron that fired into it last timestep. Software can't help — the host doesn't see per-timestep state.
+1. **Detect coincidences in hardware.** For every neuron that spikes this timestep, find every pre-synaptic axon/neuron that fired into it last timestep. Software can't help, because the host doesn't see per-timestep state.
 2. **Maintain an eligibility trace per synapse.** A small signed value that accumulates on coincidence and decays each timestep, independent of the weight.
 3. **Update weights from the eligibility trace, gated by a reward signal.** Only when reward is high do eligible synapses actually change weight.
 
-All three happen inside one timestep, after the existing Phase 1 / Phase 2 work that Chapters 2.1–2.3 describe.
+All three happen inside one timestep, after the existing Phase 1 / Phase 2 work that Chapters 2.1-2.3 describe.
 
 ---
 
@@ -31,13 +31,13 @@ All three happen inside one timestep, after the existing Phase 1 / Phase 2 work 
 ```
                   ┌────────────────────────────────────────────────────────┐
                   │              Existing Phase 1 / Phase 2                 │
-                  │   (Chapter 2 — unchanged)                                │
+                  │   (Chapter 2, unchanged)                                 │
                   └────────────────────────────────────────────────────────┘
                                             │
                                             ▼
    ┌──────────────────────────────────┐    During Phase 2, every synapse
    │  Active Synapse Buffer (ASB)     │◄── packet's R3 address and 16
-   │  in IEP — 64×2 entries × 16 grp  │    target URAM addrs get logged.
+   │  in IEP, 64×2 entries × 16 grp   │    target URAM addrs get logged.
    └─────────────┬────────────────────┘
                  │ swap on exec_run
                  ▼
@@ -88,7 +88,7 @@ All three happen inside one timestep, after the existing Phase 1 / Phase 2 work 
    └──────────────────────────────────┘    after WUE finishes.
 ```
 
-The five new blocks above — ASB, coincidence comparator, coincFIFO, WUE, ET RMW + decay — are the entire R-STDP addition. Everything else in Chapter 2 still happens exactly as documented.
+The five new blocks above (ASB, coincidence comparator, coincFIFO, WUE, ET RMW + decay) are the entire R-STDP addition. Everything else in Chapter 2 still happens exactly as documented.
 
 ---
 
@@ -102,11 +102,11 @@ The five new blocks above — ASB, coincidence comparator, coincFIFO, WUE, ET RM
 | **Active Synapse Buffer (ASB)** | `internal_events_processor.v` | Double-buffered 64×2 record of "which synapse packets arrived in Phase 2, and which neurons they targeted." |
 | **Phase 1 coincidence comparator** | `internal_events_processor.v` | Pure combinational AND of "post-synaptic spiked now" and "pre-synaptic was in ASB(prev)." |
 | **coincFIFO** | top-level wiring; produced by IEP, consumed by hbm_processor | 40-bit-wide queue carrying one work item per coincident `(group, R3 address)` pair. |
-| **Weight Update Engine (WUE)** | `hbm_processor.v` | New TX states 12–15 and RX states 10–14. Pops coincFIFO, reads R4 + R3, computes new weight, writes R3 back. |
+| **Weight Update Engine (WUE)** | `hbm_processor.v` | New TX states 12-15 and RX states 10-14. Pops coincFIFO, reads R4 + R3, computes new weight, writes R3 back. |
 | **ET RMW FSM** | `internal_events_processor.v` | Separate 5-state FSM (IDLE → READ → WAIT → WRITE → DONE) that increments one ET URAM cell on request from WUE. |
 | **ET decay sweep** | `internal_events_processor.v` | Two main-FSM states (ET_DECAY_READ/WRITE) that sweep `[et_uram_start_raddr .. et_uram_end_raddr]` once per timestep. |
 
-If a signal name in 4.4–4.12 looks foreign, it's probably one of the boundary wires between these blocks — `coincfifo_din`, `wue_et_uram_addr`, `iep_et_value`, `et_increment`, `exec_reward`. Each gets defined where it first matters.
+If a signal name in 4.4-4.12 looks foreign, it's probably one of the boundary wires between these blocks: `coincfifo_din`, `wue_et_uram_addr`, `iep_et_value`, `et_increment`, `exec_reward`. Each gets defined where it first matters.
 
 ---
 
@@ -124,7 +124,7 @@ If a signal name in 4.4–4.12 looks foreign, it's probably one of the boundary 
 | [4.11](4_11_host_style_tb_level2) | Host-style TB + Python command generator | Drive the FPGA from a command stream the way `hs_bridge` will, end-to-end. |
 | [4.12](4_12_next_steps) | What's open: ET rule fix, host TBs, bitstream, hs_api, simpleSim, RL | Pick a starting project and find every doc that mentions it. |
 
-Each page targets 15–25 minutes of reading. 4.6, 4.7, and 4.9 are the longest; budget more time for those.
+Each page targets 15-25 minutes of reading. 4.6, 4.7, and 4.9 are the longest; budget more time for those.
 
 ---
 
@@ -134,19 +134,19 @@ Each page targets 15–25 minutes of reading. 4.6, 4.7, and 4.9 are the longest;
 
 | `plan.txt` step | Covered in |
 |---|---|
-| 0 — Lock baseline | (not a doc topic — it's the baseline behind Chapters 0–3) |
-| 1 — Reward register | [4.4](4_4_reward_and_address_mapping) |
-| 2 — Region 4 mapping | [4.4](4_4_reward_and_address_mapping) |
-| 3 — R3 address tracking inside `hbm_processor` | [4.5](4_5_r3_address_tracking) |
-| 4 — Coincidence detection + coincFIFO | [4.6](4_6_coincidence_detection) |
-| 5 — WUE read-compute (no write) | [4.7](4_7_weight_update_engine) |
-| 6 — WUE write-back enabled | [4.7](4_7_weight_update_engine) |
-| 7 — Reward gate on weight write | [4.7](4_7_weight_update_engine) |
-| 8 (Level 1) — Integration TB | [4.10](4_10_integration_tb_level1) |
-| 8 (Level 2) — Host-style TB | [4.11](4_11_host_style_tb_level2) |
+| 0. Lock baseline | (not a doc topic; it's the baseline behind Chapters 0-3) |
+| 1. Reward register | [4.4](4_4_reward_and_address_mapping) |
+| 2. Region 4 mapping | [4.4](4_4_reward_and_address_mapping) |
+| 3. R3 address tracking inside `hbm_processor` | [4.5](4_5_r3_address_tracking) |
+| 4. Coincidence detection + coincFIFO | [4.6](4_6_coincidence_detection) |
+| 5. WUE read-compute (no write) | [4.7](4_7_weight_update_engine) |
+| 6. WUE write-back enabled | [4.7](4_7_weight_update_engine) |
+| 7. Reward gate on weight write | [4.7](4_7_weight_update_engine) |
+| 8 (Level 1). Integration TB | [4.10](4_10_integration_tb_level1) |
+| 8 (Level 2). Host-style TB | [4.11](4_11_host_style_tb_level2) |
 | "Next steps" (ET rule, host TBs, bitstream, hs_api, simpleSim, RL) | [4.12](4_12_next_steps) |
 
-The eligibility trace machinery (URAM-resident ETs, RMW FSM, decay) doesn't have its own step number — it's woven through steps 4–7 — so it gets its own page: [4.8](4_8_eligibility_trace).
+The eligibility trace machinery (URAM-resident ETs, RMW FSM, decay) doesn't have its own step number. It's woven through steps 4-7, so it gets its own page: [4.8](4_8_eligibility_trace).
 
 ---
 
@@ -154,11 +154,11 @@ The eligibility trace machinery (URAM-resident ETs, RMW FSM, decay) doesn't have
 
 Several short text files in `hardware_code_rstdp/` aren't compiled into anything but capture decisions you'll want to know about:
 
-- **`plan.txt`** — the 8-step bring-up plan.
-- **`CHANGES.md`** — step 8 workaround removal and the `hbm_count` RTL fix.
-- **`RTL_fixes_explained.txt`** — three bug fixes plus the secondary `asb_r3_extract` ordering fix, with reproducible test setups.
-- **`IEP_coincidence_logic_explained.txt`** — line-by-line walkthrough of the ASB + coincidence logic (the source material for [4.6](4_6_coincidence_detection)).
-- **`et_location_bug_fix_plan.txt`** — the polished plan for moving ETs from HBM R4 into URAM. Source material for [4.7](4_7_weight_update_engine) and [4.8](4_8_eligibility_trace).
-- **`hs_bridge_and_api_plan.txt`** — what host migration still needs (opcodes, compiler changes, telemetry, version pinning). Source material for [4.12](4_12_next_steps).
+- **`plan.txt`**: the 8-step bring-up plan.
+- **`CHANGES.md`**: step 8 workaround removal and the `hbm_count` RTL fix.
+- **`RTL_fixes_explained.txt`**: three bug fixes plus the secondary `asb_r3_extract` ordering fix, with reproducible test setups.
+- **`IEP_coincidence_logic_explained.txt`**: line-by-line walkthrough of the ASB + coincidence logic (the source material for [4.6](4_6_coincidence_detection)).
+- **`et_location_bug_fix_plan.txt`**: the polished plan for moving ETs from HBM R4 into URAM. Source material for [4.7](4_7_weight_update_engine) and [4.8](4_8_eligibility_trace).
+- **`hs_bridge_and_api_plan.txt`**: what host migration still needs (opcodes, compiler changes, telemetry, version pinning). Source material for [4.12](4_12_next_steps).
 
 Each page links to whichever of these is relevant.

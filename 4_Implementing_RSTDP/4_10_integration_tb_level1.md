@@ -6,7 +6,7 @@ nav_order: 10
 
 # 4.10 Simulation: The Integration Testbench (Level 1)
 
-This page is about [`hardware_code_rstdp/tb/step8_learning_integration_tb.sv`](../../hardware_code_rstdp/tb/step8_learning_integration_tb.sv) — the "Level 1" integration testbench from `plan.txt` step 8. The TB instantiates `hbm_processor` + `internal_events_processor` + a coincFIFO model + behavioral URAM/HBM models, then drives 16 system-level R-STDP scenarios.
+This page is about [`hardware_code_rstdp/tb/step8_learning_integration_tb.sv`](../../hardware_code_rstdp/tb/step8_learning_integration_tb.sv), the "Level 1" integration testbench from `plan.txt` step 8. The TB instantiates `hbm_processor` + `internal_events_processor` + a coincFIFO model + behavioral URAM/HBM models, then drives 16 system-level R-STDP scenarios.
 
 You'll work with this file when you need to:
 
@@ -78,8 +78,8 @@ The 16 tests cover (per MEMORY.md, with current numbering):
 
 | Tests | Coverage |
 |---|---|
-| 1–8 | Basic flows: no spike, coincidence without reward, coincidence with reward, full learning sequence over multiple timesteps, backpressure, hbm_count alignment regression, membrane-only updates, reward-independent membrane updates |
-| 9–11 | ET RMW basic / accumulation / saturation |
+| 1-8 | Basic flows: no spike, coincidence without reward, coincidence with reward, full learning sequence over multiple timesteps, backpressure, hbm_count alignment regression, membrane-only updates, reward-independent membrane updates |
+| 9-11 | ET RMW basic / accumulation / saturation |
 | 12 | Weight clamping (sum > 32767 → 32767) |
 | 13 | reward=0 gate (ET still updates, weight stays) |
 | 14 | End-to-end coincidence with 8 per-stage assertions |
@@ -125,7 +125,7 @@ et_uram_end_raddr   = 13'd2;
 et_leak_shift       = 4'd0;   // disable decay if you want pure accumulation
 ```
 
-If `et_increment = 0`, every ET RMW is a no-op and weights won't change — common cause of "my test runs but checks zero == zero."
+If `et_increment = 0`, every ET RMW is a no-op and weights won't change. This is a common cause of "my test runs but checks zero == zero."
 
 ### 3. **Use the AXI scoreboard, not `hbm_mem_aa[]`, for write checks**
 
@@ -150,7 +150,7 @@ check_wue_write(
 );
 ```
 
-It verifies the WUE AR addresses, the captured `dbg_wue_*` registers, the AXI write address (beat 0 for groups 8–15, beat 1 for groups 0–7), and the weight bits extracted from the captured beat. **Read this task before writing a new test that involves a write.** It's the canonical "did everything happen right" check.
+It verifies the WUE AR addresses, the captured `dbg_wue_*` registers, the AXI write address (beat 0 for groups 8-15, beat 1 for groups 0-7), and the weight bits extracted from the captured beat. **Read this task before writing a new test that involves a write.** It's the canonical "did everything happen right" check.
 
 ### 4. **Use `check_et_rmw()` for ET RMW**
 
@@ -285,11 +285,11 @@ Test tasks are called in order from the main `initial` block at the bottom of th
 
 A worked example: add a test for **"ET decay should reduce a positive ET by ~6% per timestep with `et_leak_shift=4`."**
 
-### Step 1 — pick a test number
+### Step 1: pick a test number
 
 The current file goes up to Test 16. Use Test 17. Numbering is local to this file.
 
-### Step 2 — write the task
+### Step 2: write the task
 
 Drop into the file before the final `initial` block:
 
@@ -326,11 +326,11 @@ endtask
 
 Three things to note:
 
-- `uram_mem[0][1][35:0]` directly reads the behavioral URAM model — fine for verifying decay since decay is the *only* writer to that cell in this test. (Don't do this for weight checks where the AXI scoreboard exists.)
+- `uram_mem[0][1][35:0]` directly reads the behavioral URAM model. That's fine for verifying decay since decay is the *only* writer to that cell in this test. (Don't do this for weight checks where the AXI scoreboard exists.)
 - `13'd2 / 2 = 1` selects URAM row 1 (the half-select bit goes into `[0]`, which equals 0 → lower half).
-- This test doesn't need `check_wue_write` or `check_et_rmw` — only decay should fire.
+- This test doesn't need `check_wue_write` or `check_et_rmw`, since only decay should fire.
 
-### Step 3 — call it from the main block
+### Step 3: call it from the main block
 
 Find the `initial begin ... end` block near the bottom of the file (~line 2540). Add a call:
 
@@ -345,7 +345,7 @@ initial begin
 end
 ```
 
-### Step 4 — recompile and run
+### Step 4: recompile and run
 
 ```bash
 xvlog -sv -d SIM \
@@ -364,13 +364,13 @@ If the test passes, you'll see `[PASS] Test17: ET=960 after 1 decay step, exp=96
 
 Smaller `_tb.sv` files exist in [`tb/`](../../hardware_code_rstdp/tb/) for individual steps:
 
-- [`region4_addr_map_tb.sv`](../../hardware_code_rstdp/tb/region4_addr_map_tb.sv) — step 2 mapping arithmetic.
-- [`region3_addr_tracking_tb.sv`](../../hardware_code_rstdp/tb/region3_addr_tracking_tb.sv) — step 3 BDFIFO + RX address reconstruction.
-- [`coincidence_coincfifo_tb.sv`](../../hardware_code_rstdp/tb/coincidence_coincfifo_tb.sv) — step 4 ASB + coincidence push.
-- [`step5_weight_update_tb.sv`](../../hardware_code_rstdp/tb/step5_weight_update_tb.sv) — step 5 WUE read+compute (no write).
-- [`command_interpreter_reward_tb.sv`](../../hardware_code_rstdp/tb/command_interpreter_reward_tb.sv) — step 1 reward register.
-- [`hbm_wue_et_increment_tb.sv`](../../hardware_code_rstdp/tb/hbm_wue_et_increment_tb.sv) — focused on ET increment plumbing.
-- [`bugfix_regression_tb.sv`](../../hardware_code_rstdp/tb/bugfix_regression_tb.sv) — the three FIX#1/2/3 regressions from `RTL_fixes_explained.txt`.
+- [`region4_addr_map_tb.sv`](../../hardware_code_rstdp/tb/region4_addr_map_tb.sv): step 2 mapping arithmetic.
+- [`region3_addr_tracking_tb.sv`](../../hardware_code_rstdp/tb/region3_addr_tracking_tb.sv): step 3 BDFIFO + RX address reconstruction.
+- [`coincidence_coincfifo_tb.sv`](../../hardware_code_rstdp/tb/coincidence_coincfifo_tb.sv): step 4 ASB + coincidence push.
+- [`step5_weight_update_tb.sv`](../../hardware_code_rstdp/tb/step5_weight_update_tb.sv): step 5 WUE read+compute (no write).
+- [`command_interpreter_reward_tb.sv`](../../hardware_code_rstdp/tb/command_interpreter_reward_tb.sv): step 1 reward register.
+- [`hbm_wue_et_increment_tb.sv`](../../hardware_code_rstdp/tb/hbm_wue_et_increment_tb.sv): focused on ET increment plumbing.
+- [`bugfix_regression_tb.sv`](../../hardware_code_rstdp/tb/bugfix_regression_tb.sv): the three FIX#1/2/3 regressions from `RTL_fixes_explained.txt`.
 
 Use these when you're debugging a single piece (e.g., "did I break the BDFIFO?"). They compile in seconds and reproduce in tens of cycles. Use the Level 1 integration TB when you want to confirm the *whole learning loop* still works after your changes.
 
@@ -383,4 +383,4 @@ Use these when you're debugging a single piece (e.g., "did I break the BDFIFO?")
 - The canonical checks are `check_wue_write()` (for weights) and `check_et_rmw()` (for ETs). Copy their argument shape.
 - Adding a test = `task automatic testN_*()` → call from the main `initial` block → recompile.
 
-Next: [4.11](4_11_host_style_tb_level2) — the Level 2 host-style TB that drives the same scenarios through the command interpreter, the way `hs_bridge` will.
+Next, [4.11](4_11_host_style_tb_level2) covers the Level 2 host-style TB that drives the same scenarios through the command interpreter, the way `hs_bridge` will.

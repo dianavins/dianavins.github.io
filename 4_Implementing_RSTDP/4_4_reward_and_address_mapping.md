@@ -6,10 +6,10 @@ nav_order: 4
 
 # 4.4 Reward Register & Address Mapping
 
-Two small things to get out of the way before the interesting machinery starts. Both are static infrastructure — once you understand them you'll see them referenced everywhere in 4.5–4.8 and never need to revisit.
+Two small things to get out of the way before the interesting machinery starts. Both are static infrastructure. Once you understand them, you'll see them referenced everywhere in 4.5-4.8 and never need to revisit.
 
-1. **The reward register** — how `exec_reward` enters the FPGA and gates weight writes.
-2. **Region 3 / Region 4 / URAM ET layout** — how a synapse's HBM address maps to where its eligibility trace lives.
+1. **The reward register**: how `exec_reward` enters the FPGA and gates weight writes.
+2. **Region 3 / Region 4 / URAM ET layout**: how a synapse's HBM address maps to where its eligibility trace lives.
 
 ---
 
@@ -17,7 +17,7 @@ Two small things to get out of the way before the interesting machinery starts. 
 
 R-STDP applies a weight change only when *both* the eligibility trace is non-zero *and* a reward signal is asserted. The reward signal comes from the host via a new command, latches into a single-bit register inside `command_interpreter.v`, and propagates as `exec_reward` to `hbm_processor.v`.
 
-### `CMD_SET_REWARD` — the host-facing command
+### `CMD_SET_REWARD`: the host-facing command
 
 Defined in [`command_interpreter.v:166`](../../hardware_code_rstdp/src/command_interpreter.v):
 
@@ -55,14 +55,14 @@ end
 wue_r3_wb_pending <= (wue_do_weight_update && exec_reward) ? 1'b1 : 1'b0;
 ```
 
-So even if a coincidence was detected (`wue_do_weight_update=1`), no HBM write happens unless `exec_reward=1` at compute time. The eligibility trace itself is still updated either way — see [4.8](4_8_eligibility_trace).
+So even if a coincidence was detected (`wue_do_weight_update=1`), no HBM write happens unless `exec_reward=1` at compute time. The eligibility trace itself is still updated either way (see [4.8](4_8_eligibility_trace)).
 
 ### Why a register and not a wire
 
 A more obvious design would be to send the reward signal directly on the command packet that runs each timestep. The register form has two advantages:
 
 - The host can set reward once and run many timesteps without re-sending it each step.
-- The reward value is stable across whatever WUE entries are in flight when the host updates it — no glitching mid-update.
+- The reward value is stable across whatever WUE entries are in flight when the host updates it, so there is no glitching mid-update.
 
 The downside: the host has to remember the current state. A 100-timestep RL episode with reward changes only on steps 17 and 88 sends just three `CMD_SET_REWARD` packets.
 
@@ -72,13 +72,13 @@ The downside: the host has to remember the current state. A 100-timestep RL epis
 
 Chapter 1.1 introduced HBM Regions 1, 2, and 3:
 
-- **Region 1** (base `0x0000`) — axon pointers
-- **Region 2** (base `0x4000`) — neuron pointers
-- **Region 3** (base `0x8000`) — synapse data, 8 synapses per 256-bit row
+- **Region 1** (base `0x0000`): axon pointers
+- **Region 2** (base `0x4000`): neuron pointers
+- **Region 3** (base `0x8000`): synapse data, 8 synapses per 256-bit row
 
 R-STDP adds one more region:
 
-- **Region 4** — eligibility trace **pointers** (not values), one 256-bit row per Region 3 row.
+- **Region 4**: eligibility trace **pointers** (not values), one 256-bit row per Region 3 row.
 
 R4 sits at a fixed offset above R3, configurable per-deployment.
 
@@ -130,7 +130,7 @@ When WUE reads an R4 row, it forwards the 13 bits to IEP as `wue_et_uram_addr`. 
 
 ### Why an indirection through URAM at all
 
-The original step-2 design parked ET values directly in R4 — `r4[255:220] = signed 36-bit ET`. That had three problems:
+The original step-2 design parked ET values directly in R4, with `r4[255:220] = signed 36-bit ET`. That had three problems:
 
 1. **Race against decay.** The ET decay sweep needs random-access read-modify-write over a contiguous range; HBM is poorly suited to that pattern.
 2. **Write amplification.** Every WUE entry would issue a 256-bit R4 write back, even though only 36 bits changed.
@@ -177,7 +177,7 @@ Every page from here on assumes you can do this mapping in your head.
 
 ## Two sibling commands you'll see referenced
 
-While we're in `command_interpreter.v`, two more new opcodes are worth knowing about. Both write ET-related configuration that [4.8](4_8_eligibility_trace) uses in depth — listed here just so you recognize them when grepping.
+While we're in `command_interpreter.v`, two more new opcodes are worth knowing about. Both write ET-related configuration that [4.8](4_8_eligibility_trace) uses in depth. They are listed here just so you recognize them when grepping.
 
 | Opcode | Name | Payload | What it sets |
 |---|---|---|---|
@@ -194,6 +194,6 @@ All three follow the same pattern: opcode in the top byte, payload in the low bi
 - `CMD_SET_REWARD` (0x0A) latches `rxFIFO_dout[0]` into `exec_reward`. That register gates `wue_r3_wb_pending` in WUE.
 - `r4_addr = r3_addr + region4_offset`. `region4_offset` is a CI-programmed input to `hbm_processor`.
 - An R4 beat stores a 13-bit **URAM pointer**, not an ET value. The ET lives in URAM, two ETs per 72-bit word, addressed `{row[11:0], half}`.
-- The two sibling commands (`CMD_SET_ET_PARAMS`, `CMD_SET_ET_RANGE`) configure decay parameters — covered in [4.8](4_8_eligibility_trace).
+- The two sibling commands (`CMD_SET_ET_PARAMS`, `CMD_SET_ET_RANGE`) configure decay parameters, covered in [4.8](4_8_eligibility_trace).
 
-Next: [4.5](4_5_r3_address_tracking) — how `hbm_processor` keeps track of which R3 address each 512-bit synapse packet came from, so the ASB has something to record.
+Next, [4.5](4_5_r3_address_tracking) explains how `hbm_processor` keeps track of which R3 address each 512-bit synapse packet came from, so the ASB has something to record.

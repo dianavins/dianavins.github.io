@@ -6,7 +6,7 @@ nav_order: 9
 
 # 4.9 Putting It Together: One R-STDP Timestep
 
-[4.4](4_4_reward_and_address_mapping)–[4.8](4_8_eligibility_trace) each covered one piece. This page stitches them into a single concrete timestep, in execution order, on the smallest network that exercises every piece of the R-STDP machinery.
+[4.4](4_4_reward_and_address_mapping)-[4.8](4_8_eligibility_trace) each covered one piece. This page stitches them into a single concrete timestep, in execution order, on the smallest network that exercises every piece of the R-STDP machinery.
 
 Read [Chapter 2.1](../2_The_Network_Comes_to_Life/Chapter_2_1) first if you don't already have the Phase 0 / Phase 1 / Phase 2 sequence in your head. This page assumes that scaffolding and only annotates the *new* behavior on top.
 
@@ -46,31 +46,31 @@ Coming into timestep T:
 | ASB buffer 1 (`asb_sel=1`) | empty | Will be read during T+1's Phase 1. Currently has nothing. |
 | `exec_reward` | 1 | Set once by host before the run. |
 
-The host's input for T is: `a` fires this timestep. So `network.step(['a'])` (or the equivalent command stream — see [4.11](4_11_host_style_tb_level2)).
+The host's input for T is: `a` fires this timestep. So `network.step(['a'])` (or the equivalent command stream, covered in [4.11](4_11_host_style_tb_level2)).
 
 ---
 
-## Timestep T — laying the groundwork
+## Timestep T: laying the groundwork
 
-In T, *no coincidence happens yet* — ASB(prev) is empty. T's job is to build the ASB(current) entry that T+1 will detect against.
+In T, *no coincidence happens yet* because ASB(prev) is empty. T's job is to build the ASB(current) entry that T+1 will detect against.
 
-### Phase 0 — input arrival (unchanged from Chapter 2)
+### Phase 0: input arrival (unchanged from Chapter 2)
 
 Host writes the `a` spike into the BRAM Future buffer. On `exec_run`, the buffer roles flip. Nothing R-STDP-specific.
 
-### Phase 1 — pointer collection (unchanged)
+### Phase 1: pointer collection (unchanged)
 
 External events processor reads BRAM, generates `exec_bram_spiked` mask. Internal events processor scans URAM to find spiking neurons (none yet). HBM processor reads axon pointers and neuron pointers.
 
 The only R-STDP-relevant thing during Phase 1 of T: **the coincidence comparator runs continuously**, but `coinc_detected = 0` everywhere because ASB(prev) is empty. No coincFIFO pushes. Membrane-only pushes also don't fire because `exec_hbm_rx_phase1_done` is still 0 during Phase 1 reads.
 
-### Phase 2 — synapse delivery (where the ASB gets written)
+### Phase 2: synapse delivery (where the ASB gets written)
 
 The synapse packet for `a → n` arrives from HBM. `exec_hbm_region3addr = 0x8000`. `exec_hbm_rdata` carries the 512-bit packet whose group-0 slot has weight=1500 and target=`13'h000` (addr of `n`).
 
 Two things happen *simultaneously* on the cycle that `exec_hbm_rvalidready_d1` fires inside `STATE_POP_PTR_FIFO`:
 
-**(a) ASB write** — [4.6](4_6_coincidence_detection):
+**(a) ASB write** (see [4.6](4_6_coincidence_detection)):
 
 ```
 asb_region3[0][0]    <= 0x8000
@@ -82,13 +82,13 @@ asb_wr_count         <= 1
 
 `asb_sel = 0` so the write goes to buffer 0. After this cycle, `asb_prev_depth` is irrelevant (this is T, not T+1), `asb_wr_count` is 1.
 
-**(b) Membrane accumulation** — the original Phase 2 behavior. `n`'s membrane: `0 + 1500 = 1500`. URAM word at row 0 lower-half is updated.
+**(b) Membrane accumulation** is the original Phase 2 behavior. `n`'s membrane: `0 + 1500 = 1500`. URAM word at row 0 lower-half is updated.
 
-The membrane-only push path *could* fire here (since `exec_bram_spiked != 0`), but on the cycle the packet arrives there's no Phase 1 coincidence push to be redundant with — and a mem-only push would correctly be made. WUE then runs and reads R3 for `a → n` via the mem-only entry, but with `do_wu = 0` it doesn't write the weight. The synapse's ET is touched (the RMW handshake fires for every entry), but with `et_increment = 100` added to ET=0 → ET=100. The reward gate doesn't apply to the ET.
+The membrane-only push path *could* fire here (since `exec_bram_spiked != 0`), but on the cycle the packet arrives there's no Phase 1 coincidence push to be redundant with, so a mem-only push would correctly be made. WUE then runs and reads R3 for `a → n` via the mem-only entry, but with `do_wu = 0` it doesn't write the weight. The synapse's ET is touched (the RMW handshake fires for every entry), but with `et_increment = 100` added to ET=0 → ET=100. The reward gate doesn't apply to the ET.
 
-Wait — the mem-only RMW does touch the ET. That's by current design but is one of the things the "fix the ET rule" next-step item might revisit, because in a proper STDP-windowed implementation the ET should only update on *coincidence*, not on every Phase 2 packet.
+Note that the mem-only RMW does touch the ET. That's by current design but is one of the things the "fix the ET rule" next-step item might revisit, because in a proper STDP-windowed implementation the ET should only update on *coincidence*, not on every Phase 2 packet.
 
-For this walkthrough, assume the membrane-only push path is suppressed by the `coinc_r3_match` check in [4.6](4_6_coincidence_detection) since `a → n`'s R3 address would later be matched in T+1's coincidence push — but in T it isn't, because `coinc_r3_latched[]` is still zero from the reset on T's `exec_run`. So in *this* particular toy run, the mem-only push *will* fire in T. ET goes from 0 to 100 in T. Document that here so you don't trip over it in the waveform.
+For this walkthrough, assume the membrane-only push path is suppressed by the `coinc_r3_match` check in [4.6](4_6_coincidence_detection) since `a → n`'s R3 address would later be matched in T+1's coincidence push. In T it isn't, because `coinc_r3_latched[]` is still zero from the reset on T's `exec_run`. So in *this* particular toy run, the mem-only push *will* fire in T. ET goes from 0 to 100 in T. Document that here so you don't trip over it in the waveform.
 
 ### ET decay sweep at the end of T
 
@@ -108,19 +108,19 @@ T+1 begins with `exec_run`.
 
 ---
 
-## Timestep T+1 — coincidence fires
+## Timestep T+1: coincidence fires
 
-Host sends another `network.step(['a'])` (or `network.step([])`, doesn't matter — `n` will spike regardless because its membrane is already over threshold). For drama let's say `a` fires again.
+Host sends another `network.step(['a'])` (or `network.step([])`; it doesn't matter, since `n` will spike regardless because its membrane is already over threshold). For drama let's say `a` fires again.
 
 ### Phase 0
 
 BRAM update, buffer swap. `asb_sel` flips from 0 to 1 (so reads in this timestep come from buffer 0, writes go to buffer 1). `asb_valid[1][*]` cleared.
 
-### Phase 1 — coincidence detected
+### Phase 1: coincidence detected
 
 This is where everything new happens.
 
-URAM scan starts at address 0. On the cycle `uram_waddr[0] = 13'h000` (i.e., `n`'s address) — which is the very first cycle of the scan — the combinational comparators light up:
+URAM scan starts at address 0. On the cycle `uram_waddr[0] = 13'h000` (i.e., `n`'s address), which is the very first cycle of the scan, the combinational comparators light up:
 
 ```
 asb_match[0][0] = asb_valid[1 (prev)][0] && asb_target[1 (prev)][0][0] == uram_waddr[0]
@@ -160,15 +160,15 @@ coincfifo_din  = {1'b1, 16'h0001, 23'h008000}
                   do_wu  group   r3_addr
 ```
 
-The mem-only push path is *suppressed* this time because `coinc_r3_match` is now 1 — `coinc_r3_latched[0] = 0x8000` matches `exec_hbm_region3addr = 0x8000` later when the Phase 2 packet arrives. So no duplicate.
+The mem-only push path is *suppressed* this time because `coinc_r3_match` is now 1: `coinc_r3_latched[0] = 0x8000` matches `exec_hbm_region3addr = 0x8000` later when the Phase 2 packet arrives. So no duplicate.
 
-### Phase 2 — `n`'s spike triggers downstream (or not, in this toy network)
+### Phase 2: `n`'s spike triggers downstream (or not, in this toy network)
 
 `n` has no downstream synapses (`n` is the output neuron). So the Phase 2 pointer FIFO for group 0 is empty. No new synapse packets. ASB(current = buffer 1) stays empty for the rest of T+1.
 
 `n`'s membrane reset to 0 after the spike (per the neuron model in [Chapter 3.7](../3_Verilog_Files_Review/internal_events_processor)). The spike itself is enqueued onto the spike output FIFO for the host to read back.
 
-### WUE — process the coincFIFO entry
+### WUE: process the coincFIFO entry
 
 Now the interesting part. After Phase 2 ends, WUE runs.
 
@@ -307,9 +307,9 @@ So eligibility *accumulates without reward*, but the weight only gets updated on
 
 ## What would change with multiple synapses
 
-If `n` were in group 5 instead of group 0, every signal subscript shifts: `coinc_spiked[5]`, `coinc_detected[5]`, the one-hot mask is `16'h0020`, etc. Everything still parallel — the comparator runs 16 of these simultaneously.
+If `n` were in group 5 instead of group 0, every signal subscript shifts: `coinc_spiked[5]`, `coinc_detected[5]`, the one-hot mask is `16'h0020`, etc. Everything is still parallel, since the comparator runs 16 of these simultaneously.
 
-If there were a second axon `b` also synapsing onto `n`, T's Phase 2 would write a *second* ASB entry. T+1's coincidence comparator would match both — `asb_match[0]` would have two bits set. The reverse-order loop in `asb_r3_extract` ensures the earliest-inserted entry (i.e., `a`'s synapse, written first) wins. Only one coincFIFO entry is pushed; only `a → n`'s weight is updated. `b → n`'s synapse is silently *not* updated this timestep — that's a known limitation of the current design, documented in [`RTL_fixes_explained.txt`](../../hardware_code_rstdp/RTL_fixes_explained.txt) under "secondary issue."
+If there were a second axon `b` also synapsing onto `n`, T's Phase 2 would write a *second* ASB entry. T+1's coincidence comparator would match both, and `asb_match[0]` would have two bits set. The reverse-order loop in `asb_r3_extract` ensures the earliest-inserted entry (i.e., `a`'s synapse, written first) wins. Only one coincFIFO entry is pushed; only `a → n`'s weight is updated. `b → n`'s synapse is silently *not* updated this timestep, a known limitation of the current design documented in [`RTL_fixes_explained.txt`](../../hardware_code_rstdp/RTL_fixes_explained.txt) under "secondary issue."
 
 If there were two coincident neurons in *different* groups (say `n` in group 0 and `m` in group 5), `phase1_coincidence` would be `16'h0021`. The priority chain in [4.6](4_6_coincidence_detection) would push two coincFIFO entries on consecutive cycles. WUE processes them serially, doing two complete pop-read-compute-write cycles.
 
@@ -329,7 +329,7 @@ If you're staring at a VCD and trying to confirm "did everything happen right":
 | Did the weight get written? | `hbm_awvalid` + `hbm_awaddr`, `hbm_wvalid` + `hbm_wdata`, `dbg_wue_wb_valid` |
 | Did decay run? | `curr_state` (3'd12 / 3'd13 / 3'd14), `et_raddr` |
 
-Probe depth=1 in xsim is enough to surface all of these — they're all on top-level wires or on registers in the two modules. `iep_curr_state` and `hbm_rx_curr_state` are exposed as output ports so you don't need hierarchical reads.
+Probe depth=1 in xsim is enough to surface all of these; they're all on top-level wires or on registers in the two modules. `iep_curr_state` and `hbm_rx_curr_state` are exposed as output ports so you don't need hierarchical reads.
 
 ---
 
@@ -340,4 +340,4 @@ Probe depth=1 in xsim is enough to surface all of these — they're all on top-l
 - The reward signal influences exactly one bit (`wue_r3_wb_pending`). ET still updates without reward. ASB and coincFIFO are reward-agnostic.
 - The decay sweep is the last thing each timestep, after WUE drains.
 
-Next: [4.10](4_10_integration_tb_level1) — how `step8_learning_integration_tb.sv` exercises everything you just read, and the conventions you need to follow to add a new test.
+Next, [4.10](4_10_integration_tb_level1) shows how `step8_learning_integration_tb.sv` exercises everything you just read, and the conventions you need to follow to add a new test.

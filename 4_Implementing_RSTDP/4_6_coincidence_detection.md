@@ -12,9 +12,9 @@ R-STDP's `Δw = R(t) · c(t)` update rule needs *coincidence* events as input. A
 
 The processor's "STDP window" is one timestep: pre-synaptic activity counts if it happened in Phase 2 of the previous timestep. Spike-timing finer than one timestep is collapsed.
 
-This page covers the hardware that detects coincidences and queues them up for the Weight Update Engine. The detection logic lives entirely inside `internal_events_processor.v` — no new modules — and adds three pieces:
+This page covers the hardware that detects coincidences and queues them up for the Weight Update Engine. The detection logic lives entirely inside `internal_events_processor.v` (no new modules) and adds three pieces:
 
-1. The **Active Synapse Buffer (ASB)** — a double-buffered record of which neurons each synapse packet targeted in the previous timestep.
+1. The **Active Synapse Buffer (ASB)**, a double-buffered record of which neurons each synapse packet targeted in the previous timestep.
 2. A **parallel comparator** that, for every URAM scan address in Phase 1, checks whether the ASB(prev) contains a matching entry.
 3. A small FSM that pushes one **coincFIFO** entry per coincident `(group, R3 address)` pair, plus a parallel path for *membrane-only* pushes (used to update neuron membrane potentials when no coincidence fires).
 
@@ -30,14 +30,14 @@ The ASB has to answer this question, posed during Phase 1 of timestep T+1:
 
 The straightforward implementation: a table keyed by `(group, address)`, populated during Phase 2, queried during the next Phase 1. The ASB is that table, with three twists.
 
-### Twist 1 — double-buffered, not cleared
+### Twist 1: double-buffered, not cleared
 
 Phase 1 of T+1 happens before Phase 2 of T+1 finishes. If we cleared the table at the start of T+1 we'd lose T's data before reading it. If we didn't clear it at all we'd accumulate stale entries forever. So the ASB has **two** buffers and a 1-bit selector `asb_sel`:
 
 - During Phase 2 of T, IEP writes into buffer `asb_sel` (call it the *current* buffer).
 - On `exec_run` of T+1, `asb_sel` flips. The buffer that was current during T becomes *prev*.
 - Phase 1 of T+1 reads from `~asb_sel` (the prev buffer).
-- Phase 2 of T+1 writes into the new current — overwriting last timestep's prev data.
+- Phase 2 of T+1 writes into the new current, overwriting last timestep's prev data.
 
 ```
 T   exec_run                            T+1  exec_run
@@ -51,19 +51,19 @@ T   exec_run                            T+1  exec_run
   └────────────────────────┘             └────────────────────────┘
 ```
 
-### Twist 2 — by group, not by address
+### Twist 2: by group, not by address
 
-Phase 1 scans URAM linearly: address 0, 1, 2, ... For each scan address, all 16 neuron groups read in parallel. The natural query is "did any ASB entry have group G targeting *this* scan address?" — so the ASB is indexed by *entry number* (a write counter), and for each entry it stores the 16 target addresses, one per group.
+Phase 1 scans URAM linearly: address 0, 1, 2, ... For each scan address, all 16 neuron groups read in parallel. The natural query is "did any ASB entry have group G targeting *this* scan address?", so the ASB is indexed by *entry number* (a write counter), and for each entry it stores the 16 target addresses, one per group.
 
 ```
 asb_target[buffer][entry][group]  →  13-bit URAM full address
 ```
 
-There are 64 entries per buffer (`ASB_DEPTH = 64`). 64 was chosen to cover a worst-case Phase 2 — every group spiking, every group's pointer chain emitting several packets — without going so large that the comparator generate block blows out routing.
+There are 64 entries per buffer (`ASB_DEPTH = 64`). 64 was chosen to cover a worst-case Phase 2 (every group spiking, every group's pointer chain emitting several packets) without going so large that the comparator generate block blows out routing.
 
-### Twist 3 — the R3 address is per-entry, not per-group
+### Twist 3: the R3 address is per-entry, not per-group
 
-The R3 address identifies *which pre-synaptic axon* sent the packet. That's the same for all 16 groups within one packet — a single 512-bit packet is exactly one R3 row. So the R3 address is stored once per entry:
+The R3 address identifies *which pre-synaptic axon* sent the packet. That's the same for all 16 groups within one packet, since a single 512-bit packet is exactly one R3 row. So the R3 address is stored once per entry:
 
 ```
 asb_region3[buffer][entry]   →  23-bit R3 row address
@@ -92,11 +92,11 @@ Total state: 2 buffers × 64 entries × (23 + 16×13 + 1) bits ≈ 30 Kb. Modest
 
 The ASB write block at [`internal_events_processor.v:619`](../../hardware_code_rstdp/src/internal_events_processor.v#L619) has three mutually exclusive branches.
 
-### Branch A — reset
+### Branch A: reset
 
 Clears `asb_wr_count`, `asb_sel`, and all `asb_valid` bits.
 
-### Branch B — `exec_run` (buffer swap)
+### Branch B: `exec_run` (buffer swap)
 
 ```verilog
 end else if (exec_run) begin
@@ -110,11 +110,11 @@ end
 
 Three things happen on every `exec_run`:
 
-1. Remember how many entries this timestep wrote (`asb_prev_depth`) so reads in the *next* timestep can stop early. (Not strictly required for correctness — `asb_valid` would do it — but useful for debug.)
+1. Remember how many entries this timestep wrote (`asb_prev_depth`) so reads in the *next* timestep can stop early. (Not strictly required for correctness, since `asb_valid` would do it, but useful for debug.)
 2. Reset the write counter.
-3. Flip the buffer selector and invalidate the new write buffer. Note the `~asb_sel` — that's the *new* prev buffer being cleared, which was the *old* current buffer two timesteps ago.
+3. Flip the buffer selector and invalidate the new write buffer. Note the `~asb_sel`: that's the *new* prev buffer being cleared, which was the *old* current buffer two timesteps ago.
 
-### Branch C — Phase 2 write
+### Branch C: Phase 2 write
 
 ```verilog
 end else if (exec_hbm_rvalidready_d1 &&
@@ -125,7 +125,7 @@ end else if (exec_hbm_rvalidready_d1 &&
     asb_region3[asb_sel][asb_wr_count] <= exec_hbm_region3addr;
     asb_target[asb_sel][asb_wr_count][0]  <= uram_raddr_0_full_reg;
     asb_target[asb_sel][asb_wr_count][1]  <= uram_raddr_1_full_reg;
-    // ... groups 2–15 ...
+    // ... groups 2-15 ...
     asb_target[asb_sel][asb_wr_count][15] <= uram_raddr_15_full_reg;
     asb_valid[asb_sel][asb_wr_count] <= 1'b1;
     asb_wr_count <= asb_wr_count + 1;
@@ -137,11 +137,11 @@ There's a lot of gating, all of it earning its keep:
 | Condition | Why it's there |
 |---|---|
 | `exec_hbm_rvalidready_d1` | One-cycle delay of `exec_hbm_rvalidready`. On the cycle the packet arrives, IEP is still *decoding* the 16 target addresses out of `exec_hbm_rdata`. One cycle later, the registered `uram_raddr_X_full_reg` values are stable. |
-| `exec_hbm_rx_phase1_done && exec_uram_phase1_done && !exec_uram_phase2_done` | We're in Phase 2 — Phase 1 of the same timestep is done but Phase 2 hasn't finished. |
+| `exec_hbm_rx_phase1_done && exec_uram_phase1_done && !exec_uram_phase2_done` | We're in Phase 2: Phase 1 of the same timestep is done but Phase 2 hasn't finished. |
 | `curr_state == STATE_POP_PTR_FIFO` | IEP's main FSM state for Phase 2 synapse processing. `exec_hbm_rvalidready_d1` can also fire during Phase 1 (pointer reads); without this guard, pointer data would be misrecorded as synapse data. |
 | `asb_wr_count < ASB_DEPTH` | Buffer not full. Synapses past entry 63 silently fall on the floor. |
 
-The R3 address comes straight from the `hbm_processor` output covered in [4.5](4_5_r3_address_tracking). The 16 target URAM addresses come from `uram_raddr_X_full_reg` — registered versions of the decoded `[28:16]` bit slices of each 32-bit synapse slot. Decoding happens in the combinational `uram_raddr_X_full` block at [`internal_events_processor.v:909`](../../hardware_code_rstdp/src/internal_events_processor.v#L909) (the `if (~exec_uram_phase2_done)` branch).
+The R3 address comes straight from the `hbm_processor` output covered in [4.5](4_5_r3_address_tracking). The 16 target URAM addresses come from `uram_raddr_X_full_reg`, which are registered versions of the decoded `[28:16]` bit slices of each 32-bit synapse slot. Decoding happens in the combinational `uram_raddr_X_full` block at [`internal_events_processor.v:909`](../../hardware_code_rstdp/src/internal_events_processor.v#L909) (the `if (~exec_uram_phase2_done)` branch).
 
 ---
 
@@ -170,7 +170,7 @@ That's 16 × 64 = 1024 13-bit comparators in parallel, plus 16 OR reductions. Al
 
 ### Why `uram_waddr[gi]` instead of `uram_raddr[gi]`
 
-The URAM has 1-cycle read latency. So `uram_raddr` (the live read port) is always one address ahead of the data currently sitting in `uram_rmwdata`. The register `uram_waddr[gi]` lags `uram_raddr` by one cycle — it holds the address whose *data* is on `uram_rmwdata` right now. That's the address we want to compare, because `coinc_spiked` (next section) is also computed from `uram_rmwdata`. Pipeline-aligned.
+The URAM has 1-cycle read latency. So `uram_raddr` (the live read port) is always one address ahead of the data currently sitting in `uram_rmwdata`. The register `uram_waddr[gi]` lags `uram_raddr` by one cycle, holding the address whose *data* is on `uram_rmwdata` right now. That's the address we want to compare, because `coinc_spiked` (next section) is also computed from `uram_rmwdata`. Pipeline-aligned.
 
 ### What `coinc_detected[G]` actually means
 
@@ -194,7 +194,7 @@ always @(*) begin : asb_r3_extract
 end
 ```
 
-The reverse loop is deliberate — earlier-inserted entries win, deterministically. With a forward loop, later-write-wins would be non-deterministic with respect to packet insertion order. (Multiple ASB entries can match the same `(group, target)` when more than one R3 packet projects to the same post-synaptic neuron via that group.) This is the "secondary issue" fix from [`RTL_fixes_explained.txt`](../../hardware_code_rstdp/RTL_fixes_explained.txt).
+The reverse loop is deliberate: earlier-inserted entries win, deterministically. With a forward loop, later-write-wins would be non-deterministic with respect to packet insertion order. (Multiple ASB entries can match the same `(group, target)` when more than one R3 packet projects to the same post-synaptic neuron via that group.) This is the "secondary issue" fix from [`RTL_fixes_explained.txt`](../../hardware_code_rstdp/RTL_fixes_explained.txt).
 
 ---
 
@@ -209,13 +209,13 @@ assign coinc_spiked[0]  = (uram_waddr[0][0])  ? (uram_rmwdata_upper_0  > thresho
 // ... groups 1-15 ...
 ```
 
-`uram_waddr[G][0]` selects upper vs. lower 36-bit half of the 72-bit URAM word — the same select that the membrane update logic uses. `uram_rmwdata_X` is the read-modify-write-hazard-resolved version of the URAM read data (covered in [Chapter 3.7](../3_Verilog_Files_Review/internal_events_processor)). Threshold is the same `threshold` register the original processor used.
+`uram_waddr[G][0]` selects upper vs. lower 36-bit half of the 72-bit URAM word, the same select that the membrane update logic uses. `uram_rmwdata_X` is the read-modify-write-hazard-resolved version of the URAM read data (covered in [Chapter 3.7](../3_Verilog_Files_Review/internal_events_processor)). Threshold is the same `threshold` register the original processor used.
 
 ### Why not just use `exec_uram_spiked`?
 
 The original processor already has a 16-bit `exec_uram_spiked` signal computed at [`internal_events_processor.v:1865`](../../hardware_code_rstdp/src/internal_events_processor.v#L1865). Two reasons we don't reuse it:
 
-1. **`exec_uram_spiked` is gated by `exec_uram_phase1_ready`**, a registered signal that asserts in `STATE_PUSH_PTR_FIFO`. Because it's registered, it stays low for one cycle after the FSM enters that state. During that one cycle, the URAM scan is *already* presenting address 0 — and `exec_uram_spiked` is forced to zero. Result: the spike at scan address 0 is permanently lost.
+1. **`exec_uram_spiked` is gated by `exec_uram_phase1_ready`**, a registered signal that asserts in `STATE_PUSH_PTR_FIFO`. Because it's registered, it stays low for one cycle after the FSM enters that state. During that one cycle, the URAM scan is *already* presenting address 0, and `exec_uram_spiked` is forced to zero. Result: the spike at scan address 0 is permanently lost.
 2. The selector bit (`uram_waddr[G][0]` vs `~uram_raddr_G_full[0]`) is equivalent algebraically but easier to reason about combinationally.
 
 `coinc_spiked` is an ungated combinational function of pipeline-aligned signals. It's correct the instant URAM data appears.
@@ -232,7 +232,7 @@ One line, [`internal_events_processor.v:727`](../../hardware_code_rstdp/src/inte
 wire [15:0] phase1_coincidence = coinc_spiked & coinc_detected;
 ```
 
-Bit G is 1 iff both halves of coincidence fired for group G at this scan address. Both inputs are combinational from `uram_waddr[gi]` and `uram_rmwdata_X`, same pipeline stage — no delay alignment needed.
+Bit G is 1 iff both halves of coincidence fired for group G at this scan address. Both inputs are combinational from `uram_waddr[gi]` and `uram_rmwdata_X`, same pipeline stage, so no delay alignment is needed.
 
 ---
 
@@ -268,9 +268,9 @@ reg        coinc_pushing;
 reg [22:0] coinc_r3_latched [0:15];
 ```
 
-- `coinc_pending_mask` — which groups still need an entry pushed. Bits clear as entries go out.
-- `coinc_pushing` — high while the priority chain is draining `coinc_pending_mask`.
-- `coinc_r3_latched[G]` — snapshot of `asb_matched_r3[G]` taken at detection time. Necessary because `asb_matched_r3` is combinational and changes every cycle as `uram_waddr` advances.
+- `coinc_pending_mask`: which groups still need an entry pushed. Bits clear as entries go out.
+- `coinc_pushing`: high while the priority chain is draining `coinc_pending_mask`.
+- `coinc_r3_latched[G]`: snapshot of `asb_matched_r3[G]` taken at detection time. Necessary because `asb_matched_r3` is combinational and changes every cycle as `uram_waddr` advances.
 
 ### Latch
 
@@ -284,7 +284,7 @@ if ((curr_state == STATE_PUSH_PTR_FIFO) && !exec_uram_phase1_done &&
 end
 ```
 
-Same `curr_state == STATE_PUSH_PTR_FIFO` guard as `coinc_spiked` — avoid the `exec_uram_phase1_ready` 1-cycle startup gap.
+Same `curr_state == STATE_PUSH_PTR_FIFO` guard as `coinc_spiked` to avoid the `exec_uram_phase1_ready` 1-cycle startup gap.
 
 ### Drain (priority chain)
 
@@ -297,11 +297,11 @@ else if (coinc_pending_mask[1])  begin coincfifo_wren <= 1'b1; coincfifo_din <= 
 else if (coinc_pending_mask[15]) begin coincfifo_wren <= 1'b1; coincfifo_din <= {1'b1, 16'h8000, coinc_r3_latched[15]}; coinc_pending_mask[15] <= 1'b0; end
 ```
 
-One group per cycle. The group mask in each entry is *one-hot* — exactly one of `0x0001`, `0x0002`, ..., `0x8000`. The WUE decodes that to a group index via `onehot_to_idx()`.
+One group per cycle. The group mask in each entry is *one-hot*: exactly one of `0x0001`, `0x0002`, ..., `0x8000`. The WUE decodes that to a group index via `onehot_to_idx()`.
 
 ### Exit
 
-`coinc_pushing` doesn't drop until both `coinc_pending_mask == 0` *and* `phase1_coincidence == 0`. Why both? The Phase 1 URAM pipeline keeps `phase1_coincidence` high for ~3 cycles per spiking row (read latency × scan rate). If `coinc_pushing` dropped as soon as the mask emptied, the latch above would fire again on the next cycle while the same combinational coincidence is still asserted — duplicate push. Holding `coinc_pushing` high until the coincidence drops avoids that.
+`coinc_pushing` doesn't drop until both `coinc_pending_mask == 0` *and* `phase1_coincidence == 0`. Why both? The Phase 1 URAM pipeline keeps `phase1_coincidence` high for ~3 cycles per spiking row (read latency × scan rate). If `coinc_pushing` dropped as soon as the mask emptied, the latch above would fire again on the next cycle while the same combinational coincidence is still asserted, producing a duplicate push. Holding `coinc_pushing` high until the coincidence drops avoids that.
 
 ---
 
@@ -311,9 +311,9 @@ This part trips people up because it's a *separate* push from the Phase 1 coinci
 
 ### Why it exists
 
-Phase 2 of the original processor (Chapter 2.2) accumulates synaptic weights into membrane potentials. In the R-STDP design, that accumulation runs through a different code path when `exec_bram_spiked != 0` (i.e., some axon group fired this timestep) — the membrane update happens *via the WUE's R3 read*, not via the normal Phase 2 ptrFIFO synapse delivery. The membrane-only push is how IEP tells WUE: "I need you to read R3 at this address even though no coincidence happened — just to deliver the synapse to the membrane update logic."
+Phase 2 of the original processor (Chapter 2.2) accumulates synaptic weights into membrane potentials. In the R-STDP design, that accumulation runs through a different code path when `exec_bram_spiked != 0` (i.e., some axon group fired this timestep). The membrane update happens *via the WUE's R3 read*, not via the normal Phase 2 ptrFIFO synapse delivery. The membrane-only push is how IEP tells WUE: "I need you to read R3 at this address even though no coincidence happened, just to deliver the synapse to the membrane update logic."
 
-The mem-only push entry carries `do_wu = 0`, so WUE knows to read R3 but *not* to compute or write a new weight. The reward gate ([4.4](4_4_reward_and_address_mapping)) doesn't apply — neither path writes weight when `do_wu` is 0.
+The mem-only push entry carries `do_wu = 0`, so WUE knows to read R3 but *not* to compute or write a new weight. The reward gate ([4.4](4_4_reward_and_address_mapping)) doesn't apply, since neither path writes weight when `do_wu` is 0.
 
 ### Where it fires
 
@@ -339,10 +339,10 @@ The conditions split into three categories:
 | Condition | Why |
 |---|---|
 | `curr_state == STATE_POP_PTR_FIFO`, `exec_hbm_rvalidready_d1`, `exec_hbm_rx_phase1_done`, `!exec_hbm_rx_phase2_done_d1` | "A Phase 2 synapse packet just arrived." |
-| `exec_bram_spiked != 16'd0` | "An axon group fired this timestep — there's a real membrane update to do via R3." |
+| `exec_bram_spiked != 16'd0` | "An axon group fired this timestep, so there's a real membrane update to do via R3." |
 | `!phase2_packet_push_seen`, `!coinc_r3_match`, `!coincfifo_full` | Suppression: don't push twice for the same packet, and don't push a membrane-only entry if a Phase 1 coincidence push already covered this R3 address. |
 
-The third row is FIX #2 from `RTL_fixes_explained.txt` — the original code had a per-timestep one-shot (`mem_only_push_done`) that incorrectly suppressed pushes for *all subsequent packets* in the timestep after the first push. The replacement is `phase2_packet_push_seen`, which resets at every new packet boundary:
+The third row is FIX #2 from `RTL_fixes_explained.txt`. The original code had a per-timestep one-shot (`mem_only_push_done`) that incorrectly suppressed pushes for *all subsequent packets* in the timestep after the first push. The replacement is `phase2_packet_push_seen`, which resets at every new packet boundary:
 
 ```verilog
 if ((curr_state == STATE_POP_PTR_FIFO) && exec_hbm_rvalidready)
@@ -366,7 +366,7 @@ end
 
 ### What about the group mask in the mem-only entry?
 
-Bits `[38:23]` carry `exec_bram_spiked` directly — *multi-hot*, one bit per group with a firing axon. WUE handles this by reading the synapse packet and applying it across all set groups in the membrane update path; no weight update happens since `do_wu = 0`.
+Bits `[38:23]` carry `exec_bram_spiked` directly. This is *multi-hot*, one bit per group with a firing axon. WUE handles this by reading the synapse packet and applying it across all set groups in the membrane update path; no weight update happens since `do_wu = 0`.
 
 ---
 
@@ -400,7 +400,7 @@ Phase 2  pointer FIFO delivers R3 at 0x8000    ptr_fifo empty (h0 doesn't fire o
 ET decay (unchanged from prior step, see 4.8)
 ```
 
-The two pieces this page covered — *recording in T*, *detecting and pushing in T+1* — are the entire ASB role. Everything downstream of the coincFIFO push is the WUE's problem.
+The two pieces this page covered (*recording in T* and *detecting and pushing in T+1*) are the entire ASB role. Everything downstream of the coincFIFO push is the WUE's problem.
 
 ---
 
@@ -412,4 +412,4 @@ The two pieces this page covered — *recording in T*, *detecting and pushing in
 - A separate mem-only path pushes `{do_wu=0, multi-hot spiked mask, R3 addr}` when axons fired and no coincidence already covered that packet.
 - Both paths use `exec_hbm_region3addr` (not payload slices) and a per-packet guard (`phase2_packet_push_seen`) to avoid duplicates.
 
-Next: [4.7](4_7_weight_update_engine) — what happens after the WUE pops a coincFIFO entry: R4 read, R3 read, ET handshake with IEP, weight compute, reward-gated write-back.
+Next, [4.7](4_7_weight_update_engine) covers what happens after the WUE pops a coincFIFO entry: R4 read, R3 read, ET handshake with IEP, weight compute, reward-gated write-back.
