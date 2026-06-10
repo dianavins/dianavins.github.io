@@ -115,6 +115,10 @@ Activity: [Pre→Post]  [STDP       [eligibility trace      │
                                                                eligible synapses
 ```
 
+![R-STDP simulation showing the eligibility-trace bridging mechanism in hardware](rstdp_simulation_step_6a_hw.png)
+
+*Simulation trace from the R-STDP-enabled hardware (`prelimenary_rstdp/step_6a`). The eligibility trace rises on coincident pre/post activity, persists while pre/post activity continues, and a delayed reward signal converts the eligible synapse's accumulated trace into a weight change.*
+
 Without eligibility traces, the reward at 1000ms would have no way to know which synapses (out of potentially millions) were involved in the action that led to the reward.
 
 With eligibility traces, the system automatically "remembers" which synapses had recent activity patterns consistent with STDP, and **only those synapses are eligible for modification** when reward arrives.
